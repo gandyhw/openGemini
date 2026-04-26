@@ -16,7 +16,9 @@ package config
 
 import (
 	"testing"
+	"time"
 
+	"github.com/influxdata/influxdb/toml"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 )
@@ -52,6 +54,20 @@ func TestTopoConfig(t *testing.T) {
 		}
 		err := TopoTest.Validate()
 		assert.Equal(t, "TopoManagerUrl must contain a valid hostname", err.Error())
+	})
+
+	convey.Convey("default limits are valid", t, func() {
+		topo := NewTopo()
+		assert.Equal(t, toml.Duration(5*time.Second), topo.RequestTimeout)
+		assert.Equal(t, int64(64<<20), topo.MaxResponseBytes)
+		assert.Equal(t, nil, topo.Validate())
+	})
+
+	convey.Convey("negative limit is invalid", t, func() {
+		topo := NewTopo()
+		topo.MaxUIDSetSize = -1
+		err := topo.Validate()
+		assert.Equal(t, "Topo max-uid-set-size must be non-negative", err.Error())
 	})
 
 }

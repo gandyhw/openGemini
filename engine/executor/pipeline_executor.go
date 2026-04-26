@@ -27,6 +27,7 @@ import (
 	"github.com/openGemini/openGemini/lib/spdy"
 	"github.com/openGemini/openGemini/lib/statisticsPusher/statistics"
 	"github.com/openGemini/openGemini/lib/tracing"
+	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/query"
 	"go.uber.org/zap"
 )
@@ -220,7 +221,7 @@ func (exec *PipelineExecutor) InitContext(ctx context.Context) error {
 		exec.contextMutex.Unlock()
 		return errno.NewError(errno.PipelineExecuting, exec.context, exec.cancelFunc)
 	}
-	exec.context, exec.cancelFunc = context.WithCancel(ctx)
+	exec.context, exec.cancelFunc = context.WithCancel(util.WithTopoQueryCache(ctx))
 	exec.contextMutex.Unlock()
 	return nil
 }

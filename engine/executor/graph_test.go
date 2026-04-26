@@ -295,6 +295,19 @@ func TestGraph(t *testing.T) {
 	}
 }
 
+func TestGraphUIDSetLimit(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{Uid: "n1"}
+	graph.Nodes["n2"] = GraphNode{Uid: "n2"}
+
+	uidSet, err := graph.UIDSet(2)
+	assertEqual(t, nil, err)
+	assertEqual(t, 2, len(uidSet))
+
+	_, err = graph.UIDSet(1)
+	assertEqual(t, "topo uid set size exceeds max-uid-set-size: 1", err.Error())
+}
+
 func TestGraphBranch(t *testing.T) {
 	convey.Convey("sourceNode does not exist", t, func() {
 		graph := &Graph{

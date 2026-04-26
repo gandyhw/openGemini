@@ -15,6 +15,7 @@
 package util
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
@@ -110,7 +112,7 @@ func TestSendGetRequest(t *testing.T) {
 
 	clientConf := &Client{
 		Conf: Config{
-			baseURL,
+			Path: baseURL,
 		},
 	}
 
@@ -203,7 +205,7 @@ func TestPushURL(t *testing.T) {
 
 		clientConf := &Client{
 			Conf: Config{
-				"https://127.0.0.0:80/v1/coc--cloudmap/topology/combination",
+				Path: "https://127.0.0.0:80/v1/coc--cloudmap/topology/combination",
 			},
 		}
 		pushURL, err := clientConf.PushURL(paramTest, "1423452355699", "1423452355699")
@@ -218,10 +220,52 @@ func TestPushURL(t *testing.T) {
 
 		clientConf := &Client{
 			Conf: Config{
-				"https://127.0.0.0:80/v1/coc--cloudmap/topology/combination",
+				Path: "https://127.0.0.0:80/v1/coc--cloudmap/topology/combination",
 			},
 		}
 		_, err := clientConf.PushURL(paramTest, "1423452355699", "1423452355699")
 		assert.Equal(t, "invalid param name", err.Error())
 	})
+}
+
+func TestSendGetRequestResponseLimit(t *testing.T) {
+	mockServer := NewMockHTTPSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("0123456789"))
+	}))
+	defer mockServer.Close()
+
+	clientConf := &Client{
+		Conf: Config{
+			Path:             mockServer.URL,
+			MaxResponseBytes: 4,
+		},
+	}
+	client := mockServer.Client()
+	_, err := clientConf.SendGetRequest(client, Param{}, "", "")
+	assert.Equal(t, "http get request failed, response body exceeds max-response-bytes: 4", err.Error())
+}
+
+func TestTopoQueryCache(t *testing.T) {
+	count := 0
+	mockServer := NewMockHTTPSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		_, _ = w.Write([]byte("topo"))
+	}))
+	defer mockServer.Close()
+
+	clientConf := &Client{
+		Conf: Config{
+			Path:           mockServer.URL,
+			RequestTimeout: time.Second,
+		},
+	}
+	provider := NewHTTPTopoProvider(clientConf, mockServer.Client())
+	ctx := WithTopoQueryCache(context.Background())
+	resp, err := FetchTopo(ctx, provider, Param{}, "", "")
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "topo", resp)
+	resp, err = FetchTopo(ctx, provider, Param{}, "", "")
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "topo", resp)
+	assert.Equal(t, 1, count)
 }

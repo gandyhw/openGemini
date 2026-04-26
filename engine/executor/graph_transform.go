@@ -159,8 +159,10 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	}
 
 	var topoData string
-	if util.GetClientConf().Conf.Path != "" {
-		response, err := util.GetClientConf().SendGetRequest(util.HttpsClient, param, startTime, endTime)
+	clientConf := util.GetClientConf()
+	provider := util.NewHTTPTopoProvider(clientConf, util.HttpsClient)
+	if provider.Configured() {
+		response, err := util.FetchTopo(ctx, provider, param, startTime, endTime)
 		if err == nil && response != "" {
 			topoData = response
 		} else {
@@ -175,6 +177,9 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	if !success {
 		return err
 	}
+	if err := checkTopoGraphLimits(graph); err != nil {
+		return err
+	}
 	subGraph, err := graph.MultiHopFilter(trans.stmt.StartNodeId, trans.stmt.HopNum, trans.stmt.NodeCondition, trans.stmt.EdgeCondition)
 	if err != nil {
 		return err
@@ -184,6 +189,18 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	trans.outputChunk.AppendTagsAndIndex(*NewChunkTagsV2(nil), 0)
 	trans.outputChunk.SetGraph(subGraph)
 	trans.output.State <- trans.outputChunk
+	return nil
+}
+
+func checkTopoGraphLimits(graph *Graph) error {
+	maxNodes := getTopoMaxGraphNodes()
+	if maxNodes > 0 && len(graph.Nodes) > maxNodes {
+		return fmt.Errorf("topo graph nodes exceeds max-graph-nodes: %d", maxNodes)
+	}
+	maxEdges := getTopoMaxGraphEdges()
+	if maxEdges > 0 && len(graph.Edges) > maxEdges {
+		return fmt.Errorf("topo graph edges exceeds max-graph-edges: %d", maxEdges)
+	}
 	return nil
 }
 

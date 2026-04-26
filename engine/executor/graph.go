@@ -79,8 +79,10 @@ type MetaData struct {
 }
 
 type Graph struct {
-	Nodes map[string]GraphNode
-	Edges map[string]GraphEdge
+	Nodes         map[string]GraphNode
+	Edges         map[string]GraphEdge
+	edgesBySource map[string][]GraphEdge
+	edgesByTarget map[string][]GraphEdge
 }
 
 const (
@@ -102,8 +104,10 @@ type IGraph interface {
 
 func NewGraph() *Graph {
 	return &Graph{
-		Nodes: make(map[string]GraphNode),
-		Edges: make(map[string]GraphEdge),
+		Nodes:         make(map[string]GraphNode),
+		Edges:         make(map[string]GraphEdge),
+		edgesBySource: make(map[string][]GraphEdge),
+		edgesByTarget: make(map[string][]GraphEdge),
 	}
 }
 
@@ -129,8 +133,16 @@ func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
 }
 
 func (G *Graph) BatchInsertEdges(graphData GraphData) (bool, error) {
+	if G.edgesBySource == nil {
+		G.edgesBySource = make(map[string][]GraphEdge)
+	}
+	if G.edgesByTarget == nil {
+		G.edgesByTarget = make(map[string][]GraphEdge)
+	}
 	for _, edge := range graphData.Graph.Edges {
 		G.Edges[edge.Uid] = edge
+		G.edgesBySource[edge.MetaData.SourceUid] = append(G.edgesBySource[edge.MetaData.SourceUid], edge)
+		G.edgesByTarget[edge.MetaData.TargetUid] = append(G.edgesByTarget[edge.MetaData.TargetUid], edge)
 	}
 	for edgeId, edge := range G.Edges {
 		sourceNode, ok := G.Nodes[edge.MetaData.SourceUid]
@@ -156,6 +168,10 @@ func (G *Graph) CreateGraph(jsonGraphData string) (bool, error) {
 	if err != nil {
 		return false, errors.New("error parsing JSON")
 	}
+	G.Nodes = make(map[string]GraphNode, len(resp.Data.Graph.Vertex))
+	G.Edges = make(map[string]GraphEdge, len(resp.Data.Graph.Edges))
+	G.edgesBySource = make(map[string][]GraphEdge, len(resp.Data.Graph.Edges))
+	G.edgesByTarget = make(map[string][]GraphEdge, len(resp.Data.Graph.Edges))
 	if !G.BatchInsertNodes(resp.Data) {
 		return false, nil
 	}
@@ -171,22 +187,14 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 		return nil, fmt.Errorf("MultiHopFilter startNodeId not found %s", startNodeId)
 	}
 
-	edgesBySource := make(map[string][]GraphEdge)
-	edgesByTarget := make(map[string][]GraphEdge)
-	for _, edge := range G.Edges {
-		edgesBySource[edge.MetaData.SourceUid] = append(edgesBySource[edge.MetaData.SourceUid], edge)
-		edgesByTarget[edge.MetaData.TargetUid] = append(edgesByTarget[edge.MetaData.TargetUid], edge)
-	}
+	G.ensureEdgeIndexes()
 
 	visited := make(map[string]struct{})
 	queue := list.New()
 	queue.PushBack(startNode)
 	visited[startNodeId] = struct{}{}
 
-	subgraph := &Graph{
-		Nodes: make(map[string]GraphNode),
-		Edges: make(map[string]GraphEdge),
-	}
+	subgraph := NewGraph()
 	subgraph.Nodes[startNodeId] = startNode
 
 	for queue.Len() > 0 && hopNum > 0 {
@@ -198,7 +206,7 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 			}
 
 			// check outgoing edges
-			outGoingEdges, ok := edgesBySource[current.Uid]
+			outGoingEdges, ok := G.edgesBySource[current.Uid]
 			if ok && outGoingEdges != nil {
 				_, err := G.processEdges(outGoingEdges, subgraph, &visited, queue, nodeCondition, edgeCondition, OutGoOp)
 				if err != nil {
@@ -207,7 +215,7 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 			}
 
 			// check incoming edges
-			inComingEdges, ok := edgesByTarget[current.Uid]
+			inComingEdges, ok := G.edgesByTarget[current.Uid]
 			if !ok || inComingEdges == nil {
 				continue
 			}
@@ -223,6 +231,18 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 		}
 	}
 	return subgraph, nil
+}
+
+func (G *Graph) ensureEdgeIndexes() {
+	if G.edgesBySource != nil && G.edgesByTarget != nil {
+		return
+	}
+	G.edgesBySource = make(map[string][]GraphEdge, len(G.Edges))
+	G.edgesByTarget = make(map[string][]GraphEdge, len(G.Edges))
+	for _, edge := range G.Edges {
+		G.edgesBySource[edge.MetaData.SourceUid] = append(G.edgesBySource[edge.MetaData.SourceUid], edge)
+		G.edgesByTarget[edge.MetaData.TargetUid] = append(G.edgesByTarget[edge.MetaData.TargetUid], edge)
+	}
 }
 
 func (G *Graph) processEdges(edges []GraphEdge, subgraph *Graph, visited *map[string]struct{}, queue *list.List, nodeCondition influxql.Expr, edgeCondition influxql.Expr, hopDir string) (*Graph, error) {
@@ -421,6 +441,15 @@ func (G *Graph) addToBufMap(bufMap map[interface{}]struct{}) {
 	for _, v := range G.Nodes {
 		(bufMap)[v.Uid] = struct{}{}
 	}
+}
+
+func (G *Graph) UIDSet(limit int) (map[interface{}]struct{}, error) {
+	if limit > 0 && len(G.Nodes) > limit {
+		return nil, fmt.Errorf("topo uid set size exceeds max-uid-set-size: %d", limit)
+	}
+	bufMap := make(map[interface{}]struct{}, len(G.Nodes))
+	G.addToBufMap(bufMap)
+	return bufMap, nil
 }
 
 func mockGetTimeGraph() string {
