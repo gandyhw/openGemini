@@ -122,6 +122,7 @@ const (
 	TopoStartNodeNotFound        = 1138
 	TopoLimitExceeded            = 1139
 	TopoUIDSetLimitExceeded      = 1140
+	RCAEventSchemaInvalid        = 1141
 )
 
 // promql2influxql

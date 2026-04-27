@@ -15,12 +15,10 @@
 package executor
 
 import (
-	"encoding/json"
 	"errors"
 	"sort"
 
 	"github.com/openGemini/openGemini/engine/hybridqp"
-	"go.uber.org/zap"
 )
 
 const (
@@ -80,76 +78,42 @@ func isWithinTSRange(targetTS int64, sortedTSList []int64, closeHourMS int64) bo
 	return false
 }
 
-func isAnomaly(anomalyTS []int64, curEntityID string, chunks []Chunk, colMap map[string]int) (bool, error) {
+func isAnomaly(anomalyTS []int64, curEntityID string, records []RCAEventRecord) (bool, error) {
 	const (
 		halfHourMs = 30 * 60 * 1000
 		twoHourMs  = 120 * 60 * 1000
 	)
 
-	for _, chunk := range chunks {
-		columns := chunk.Columns()
-		idCol := columns[colMap[ID]]
-		entityIDCol := columns[colMap[EntityID]]
-		typeCol := columns[colMap[Type]]
-		annotationsCol := columns[colMap[Annotations]]
-		for i := 0; i < idCol.Length(); i++ {
-			if entityIDCol.StringValue(i) != curEntityID {
-				continue
+	for _, record := range records {
+		if record.EntityID != curEntityID {
+			continue
+		}
+		switch record.Type {
+		case ANOMALY:
+			for _, ts := range record.Timestamps {
+				if isWithinTSRange(ts, anomalyTS, halfHourMs) {
+					return true, nil
+				}
 			}
-			tmp := annotationsCol.StringValue(i)
-			annotations := make(map[string]interface{})
-			err := json.Unmarshal([]byte(tmp), &annotations)
-			if err != nil {
-				log.Error("RCA Error: unable to unmarshal annotations", zap.Error(err))
-				return false, err
+		case ALARM:
+			if record.HasEndTS {
+				if isWithinTSRange(record.StartTS, anomalyTS, halfHourMs) {
+					return true, nil
+				}
+			} else if isWithinTSRange(record.StartTS, anomalyTS, twoHourMs) {
+				return true, nil
 			}
-			switch typeCol.StringValue(i) {
-			case ANOMALY:
-				timestamps, ok := annotations[Timestamps]
-				if !ok {
-					return false, errors.New("RCA Error: timestamps not found in annotations")
+		case EVENT:
+			if record.HasEndTS {
+				if isWithinTSRange(record.EndTS, anomalyTS, halfHourMs) {
+					return true, nil
 				}
-				for _, ts := range timestamps.([]interface{}) {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
+			} else if record.HasStartTS {
+				if isWithinTSRange(record.StartTS, anomalyTS, twoHourMs) {
+					return true, nil
 				}
-			case ALARM:
-				ts, ok := annotations[StartTS]
-				if !ok {
-					return false, errors.New("RCA Error: fired timestamp not found in annotations")
-				}
-				_, ok = annotations[EndTS]
-				if ok {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
-				} else {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				}
-			case EVENT:
-				ts, ok := annotations[CreatedTS]
-				if !ok {
-					return false, errors.New("RCA Error: created timestamp not found in annotations")
-				}
-
-				tsEnd, okEnd := annotations[EndTS]
-				tsStart, okStart := annotations[StartTS]
-				if okEnd {
-					if isWithinTSRange(int64(tsEnd.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
-				} else if okStart {
-					if isWithinTSRange(int64(tsStart.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				} else {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				}
+			} else if isWithinTSRange(record.CreatedTS, anomalyTS, twoHourMs) {
+				return true, nil
 			}
 		}
 	}
@@ -188,8 +152,13 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 	}
 	BFSNarrow := algoParams.BFSNarrow
 
+	records, err := BuildRCAEventRecords(chunks, colMap)
+	if err != nil {
+		return nil, err
+	}
+
 	// Extract anomaly timestamps.
-	coreAnomalyTS, err := extractCoreAnomalyTimestamps(chunks, colMap, coreEntityID, taskMeta)
+	coreAnomalyTS, err := extractCoreAnomalyTimestamps(records, coreEntityID, taskMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +179,7 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 
 	for idx < len(nodeQueue) {
 		curEntityID := nodeQueue[idx]
-		anomaly, err := isAnomaly(coreAnomalyTS, curEntityID, chunks, colMap)
+		anomaly, err := isAnomaly(coreAnomalyTS, curEntityID, records)
 		if err != nil {
 			return nil, err
 		}
@@ -299,55 +268,26 @@ func buildGraph(nodeList []GraphNode, edgeList []GraphEdge) *Graph {
 	return &Graph{Nodes: nodes, Edges: edges}
 }
 
-func extractCoreAnomalyTimestamps(chunks []Chunk, colMap map[string]int, coreEntityID string, taskMeta map[string]interface{}) ([]int64, error) {
+func extractCoreAnomalyTimestamps(records []RCAEventRecord, coreEntityID string, taskMeta map[string]interface{}) ([]int64, error) {
 	var coreAnomalyTS []int64
 	found := false
 
-	for _, chunk := range chunks {
-		columns := chunk.Columns()
-		idCol := columns[colMap[ID]]
-		entityIDCol := columns[colMap[EntityID]]
-		typeCol := columns[colMap[Type]]
-		annotationsCol := columns[colMap[Annotations]]
+	for _, record := range records {
+		if record.EntityID != coreEntityID {
+			continue
+		}
+		found = true
 
-		for i := 0; i < idCol.Length(); i++ {
-			if entityIDCol.StringValue(i) != coreEntityID {
-				continue
-			}
-			found = true
-			tmp := annotationsCol.StringValue(i)
-			var annotations map[string]interface{}
-			if err := json.Unmarshal([]byte(tmp), &annotations); err != nil {
-				log.Error("RCA Error: unmarshal annotations failed",
-					zap.Error(err),
-					zap.String("entityID", coreEntityID))
-				continue
-			}
-
-			switch typeCol.StringValue(i) {
-			case ANOMALY:
-				timestamps, ok := annotations[Timestamps]
-				if !ok {
-					return nil, errors.New("RCA Error: timestamps not found in annotations")
-				}
-				for _, ts := range timestamps.([]interface{}) {
-					coreAnomalyTS = append(coreAnomalyTS, int64(ts.(float64)))
-				}
-			case ALARM:
-				timestamp, ok := annotations[StartTS]
-				if !ok {
-					return nil, errors.New("RCA Error: fired timestamp not found in annotations")
-				}
-				coreAnomalyTS = append(coreAnomalyTS, int64(timestamp.(float64)))
-			case EVENT:
-				timestamp, ok := annotations[StartTS]
-				if !ok {
-					timestamp, ok = annotations[CreatedTS]
-					if !ok {
-						return nil, errors.New("RCA Error: created timestamp not found in annotations")
-					}
-				}
-				coreAnomalyTS = append(coreAnomalyTS, int64(timestamp.(float64)))
+		switch record.Type {
+		case ANOMALY:
+			coreAnomalyTS = append(coreAnomalyTS, record.Timestamps...)
+		case ALARM:
+			coreAnomalyTS = append(coreAnomalyTS, record.StartTS)
+		case EVENT:
+			if record.HasStartTS {
+				coreAnomalyTS = append(coreAnomalyTS, record.StartTS)
+			} else {
+				coreAnomalyTS = append(coreAnomalyTS, record.CreatedTS)
 			}
 		}
 	}

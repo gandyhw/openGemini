@@ -272,6 +272,7 @@ var messageMap = map[Errno]*Message{
 	TopoStartNodeNotFound:          newWarnMessage("MultiHopFilter startNodeId not found %s", ModuleQueryEngine),
 	TopoLimitExceeded:              newWarnMessage("topo graph %s exceeds %s: %d", ModuleQueryEngine),
 	TopoUIDSetLimitExceeded:        newWarnMessage("topo uid set size exceeds max-uid-set-size: %d", ModuleQueryEngine),
+	RCAEventSchemaInvalid:          newWarnMessage("invalid RCA event schema: %v", ModuleQueryEngine),
 
 	// query interface error codes
 	ReverseValueIllegal:     newWarnMessage("reverse value is illegal", ModuleQueryInterface),
