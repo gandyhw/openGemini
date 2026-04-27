@@ -166,7 +166,7 @@ func (G *Graph) CreateGraph(jsonGraphData string) (bool, error) {
 	var resp Response
 	err := json.Unmarshal([]byte(jsonGraphData), &resp)
 	if err != nil {
-		return false, errors.New("error parsing JSON")
+		return false, errno.NewError(errno.TopoGraphParseFailed, "error parsing JSON")
 	}
 	G.Nodes = make(map[string]GraphNode, len(resp.Data.Graph.Vertex))
 	G.Edges = make(map[string]GraphEdge, len(resp.Data.Graph.Edges))
@@ -184,7 +184,7 @@ func (G *Graph) CreateGraph(jsonGraphData string) (bool, error) {
 func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition influxql.Expr, edgeCondition influxql.Expr) (*Graph, error) {
 	startNode, ok := G.Nodes[startNodeId]
 	if !ok {
-		return nil, fmt.Errorf("MultiHopFilter startNodeId not found %s", startNodeId)
+		return nil, errno.NewError(errno.TopoStartNodeNotFound, startNodeId)
 	}
 
 	G.ensureEdgeIndexes()
@@ -445,7 +445,7 @@ func (G *Graph) addToBufMap(bufMap map[interface{}]struct{}) {
 
 func (G *Graph) UIDSet(limit int) (map[interface{}]struct{}, error) {
 	if limit > 0 && len(G.Nodes) > limit {
-		return nil, fmt.Errorf("topo uid set size exceeds max-uid-set-size: %d", limit)
+		return nil, errno.NewError(errno.TopoUIDSetLimitExceeded, limit)
 	}
 	bufMap := make(map[interface{}]struct{}, len(G.Nodes))
 	G.addToBufMap(bufMap)

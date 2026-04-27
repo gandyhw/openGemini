@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/influxql"
 	"github.com/smartystreets/goconvey/convey"
 )
@@ -305,7 +306,26 @@ func TestGraphUIDSetLimit(t *testing.T) {
 	assertEqual(t, 2, len(uidSet))
 
 	_, err = graph.UIDSet(1)
+	assertEqual(t, true, errno.Equal(err, errno.TopoUIDSetLimitExceeded))
 	assertEqual(t, "topo uid set size exceeds max-uid-set-size: 1", err.Error())
+}
+
+func TestGraphClassifiedTopoErrors(t *testing.T) {
+	graph := NewGraph()
+	ok, err := graph.CreateGraph("{")
+	assertEqual(t, false, ok)
+	assertEqual(t, true, errno.Equal(err, errno.TopoGraphParseFailed))
+
+	graph.Nodes["n1"] = GraphNode{Uid: "n1"}
+	_, err = graph.MultiHopFilter("missing", 1, nil, nil)
+	assertEqual(t, true, errno.Equal(err, errno.TopoStartNodeNotFound))
+}
+
+func TestGraphUIDSetEmptyStillFiltersAllPoints(t *testing.T) {
+	graph := NewGraph()
+	uidSet, err := graph.UIDSet(1)
+	assertEqual(t, nil, err)
+	assertEqual(t, 0, len(uidSet))
 }
 
 func TestGraphBranch(t *testing.T) {

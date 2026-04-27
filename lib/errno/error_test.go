@@ -166,6 +166,25 @@ func TestQueryErrorNoFieldSelected(t *testing.T) {
 	assert.False(t, errno.Equal(err, errno.UnsupportedDataType))
 }
 
+func TestTopoRCAQueryErrors(t *testing.T) {
+	items := []struct {
+		errno errno.Errno
+		args  []interface{}
+	}{
+		{errno: errno.TopoFetchFailed, args: []interface{}{"test"}},
+		{errno: errno.TopoGraphParseFailed, args: []interface{}{"test"}},
+		{errno: errno.TopoStartNodeNotFound, args: []interface{}{"test"}},
+		{errno: errno.TopoLimitExceeded, args: []interface{}{"nodes", "max-graph-nodes", 1}},
+		{errno: errno.TopoUIDSetLimitExceeded, args: []interface{}{1}},
+	}
+	for _, item := range items {
+		err := errno.NewError(item.errno, item.args...)
+		assert.True(t, errno.Equal(err, item.errno))
+		assert.NotEqual(t, "unknown error", err.Error())
+		assert.Equal(t, errno.ModuleQueryEngine, err.Module())
+	}
+}
+
 func TestErrsDispatchNil(t *testing.T) {
 	errs := errno.NewErrs()
 	errs.Init(1, nil)

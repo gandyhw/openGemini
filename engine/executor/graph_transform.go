@@ -166,7 +166,10 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 		if err == nil && response != "" {
 			topoData = response
 		} else {
-			return err
+			if err == nil {
+				err = errors.New("empty topo response")
+			}
+			return errno.NewError(errno.TopoFetchFailed, err)
 		}
 	} else {
 		topoData = mockGetTimeGraph()
@@ -175,13 +178,19 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	graph := NewGraph()
 	success, err := graph.CreateGraph(topoData)
 	if !success {
-		return err
+		if errno.Equal(err, errno.TopoGraphParseFailed) {
+			return err
+		}
+		return errno.NewError(errno.TopoGraphParseFailed, err)
 	}
 	if err := checkTopoGraphLimits(graph); err != nil {
 		return err
 	}
 	subGraph, err := graph.MultiHopFilter(trans.stmt.StartNodeId, trans.stmt.HopNum, trans.stmt.NodeCondition, trans.stmt.EdgeCondition)
 	if err != nil {
+		if errno.Equal(err, errno.TopoStartNodeNotFound) {
+			return err
+		}
 		return err
 	}
 	trans.outputChunk = trans.chunkBuilder.NewChunk("")
@@ -195,11 +204,11 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 func checkTopoGraphLimits(graph *Graph) error {
 	maxNodes := getTopoMaxGraphNodes()
 	if maxNodes > 0 && len(graph.Nodes) > maxNodes {
-		return fmt.Errorf("topo graph nodes exceeds max-graph-nodes: %d", maxNodes)
+		return errno.NewError(errno.TopoLimitExceeded, "nodes", "max-graph-nodes", maxNodes)
 	}
 	maxEdges := getTopoMaxGraphEdges()
 	if maxEdges > 0 && len(graph.Edges) > maxEdges {
-		return fmt.Errorf("topo graph edges exceeds max-graph-edges: %d", maxEdges)
+		return errno.NewError(errno.TopoLimitExceeded, "edges", "max-graph-edges", maxEdges)
 	}
 	return nil
 }
