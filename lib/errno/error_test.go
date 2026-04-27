@@ -181,7 +181,7 @@ func TestTopoRCAQueryErrors(t *testing.T) {
 		err := errno.NewError(item.errno, item.args...)
 		assert.True(t, errno.Equal(err, item.errno))
 		assert.NotEqual(t, "unknown error", err.Error())
-		assert.Equal(t, errno.ModuleQueryEngine, err.Module())
+		assert.Equal(t, int(errno.ModuleQueryEngine), int(err.Module()))
 	}
 }
 
