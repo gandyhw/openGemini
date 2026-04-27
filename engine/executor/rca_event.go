@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"strconv"
 
 	"github.com/openGemini/openGemini/lib/errno"
 )
@@ -61,10 +60,7 @@ func DecodeRCAEventRecord(id, entityID, eventType, annotations string) (RCAEvent
 			record.EndTS, record.HasEndTS, err = decodeOptionalInt64(fields, EndTS, id, eventType, true)
 		}
 		if err == nil {
-			record.CreatedTS, err = decodeRequiredInt64(fields, CreatedTS, id, eventType)
-		}
-		if err == nil {
-			record.HasCreatedTS = true
+			record.CreatedTS, record.HasCreatedTS, err = decodeOptionalInt64(fields, CreatedTS, id, eventType, false)
 		}
 	case EVENT:
 		record.CreatedTS, err = decodeRequiredInt64(fields, CreatedTS, id, eventType)
@@ -75,6 +71,8 @@ func DecodeRCAEventRecord(id, entityID, eventType, annotations string) (RCAEvent
 		if err == nil {
 			record.EndTS, record.HasEndTS, err = decodeOptionalInt64(fields, EndTS, id, eventType, false)
 		}
+	default:
+		return RCAEventRecord{}, rcaEventSchemaError("unsupported RCA event type %s for %s", eventType, id)
 	}
 	if err != nil {
 		return RCAEventRecord{}, err
@@ -178,15 +176,7 @@ func decodeRequiredInt64Array(fields map[string]json.RawMessage, field, id, even
 }
 
 func jsonNumberToInt64(number json.Number) (int64, error) {
-	ts, err := number.Int64()
-	if err == nil {
-		return ts, nil
-	}
-	floatValue, err := strconv.ParseFloat(number.String(), 64)
-	if err != nil {
-		return 0, err
-	}
-	return int64(floatValue), nil
+	return number.Int64()
 }
 
 func rcaEventSchemaError(format string, args ...interface{}) error {

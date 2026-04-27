@@ -46,6 +46,20 @@ func TestDecodeRCAEventRecord(t *testing.T) {
 		assert.True(t, record.HasCreatedTS)
 	})
 
+	t.Run("alarm accepts missing create time", func(t *testing.T) {
+		record, err := executor.DecodeRCAEventRecord(
+			"alarm-002",
+			"entity-a",
+			executor.ALARM,
+			`{"start_time":1000}`,
+		)
+		require.NoError(t, err)
+
+		assert.Equal(t, int64(1000), record.StartTS)
+		assert.True(t, record.HasStartTS)
+		assert.False(t, record.HasCreatedTS)
+	})
+
 	t.Run("event decodes create time without start or end", func(t *testing.T) {
 		record, err := executor.DecodeRCAEventRecord(
 			"event-001",
@@ -103,11 +117,6 @@ func TestDecodeRCAEventRecordSchemaErrors(t *testing.T) {
 			annotations: `{"create_time":1000}`,
 		},
 		{
-			name:        "alarm missing create time",
-			eventType:   executor.ALARM,
-			annotations: `{"start_time":1000}`,
-		},
-		{
 			name:        "event missing create time",
 			eventType:   executor.EVENT,
 			annotations: `{"start_time":1000}`,
@@ -131,6 +140,21 @@ func TestDecodeRCAEventRecordSchemaErrors(t *testing.T) {
 			name:        "timestamp array contains wrong type",
 			eventType:   executor.ANOMALY,
 			annotations: `{"timestamps":[1000,"bad"]}`,
+		},
+		{
+			name:        "unknown event type",
+			eventType:   "unknown",
+			annotations: `{"start_time":1000}`,
+		},
+		{
+			name:        "fractional timestamp",
+			eventType:   executor.EVENT,
+			annotations: `{"create_time":1000.5}`,
+		},
+		{
+			name:        "exponent timestamp",
+			eventType:   executor.EVENT,
+			annotations: `{"create_time":1e3}`,
 		},
 	}
 
