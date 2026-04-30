@@ -163,6 +163,7 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 		return nil, err
 	}
 
+	subTopo.ensureEdgeIndexes()
 	edgeList := make([]GraphEdge, 0, len(subTopo.Edges))
 	existedEdgeID := make(map[string]struct{}, len(subTopo.Edges))
 	visitedNodes := make(map[string]struct{}, len(subTopo.Nodes))
@@ -191,7 +192,7 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 		tmpIdx := 0
 		for tmpIdx < len(tmpNodeIDList) {
 			tmpEntityID := tmpNodeIDList[tmpIdx]
-			for _, tmpCase := range subTopo.EdgesFromSource(tmpEntityID) {
+			for _, tmpCase := range subTopo.edgesFromSource(tmpEntityID) {
 				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
 				meta := tmpCase.MetaData
 				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
@@ -209,7 +210,7 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 					tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
 				}
 			}
-			for _, tmpCase := range subTopo.EdgesToTarget(tmpEntityID) {
+			for _, tmpCase := range subTopo.edgesToTarget(tmpEntityID) {
 				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
 				meta := tmpCase.MetaData
 				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +

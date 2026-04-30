@@ -79,10 +79,11 @@ type MetaData struct {
 }
 
 type Graph struct {
-	Nodes         map[string]GraphNode
-	Edges         map[string]GraphEdge
-	edgesBySource map[string][]GraphEdge
-	edgesByTarget map[string][]GraphEdge
+	Nodes                map[string]GraphNode
+	Edges                map[string]GraphEdge
+	edgesBySource        map[string][]GraphEdge
+	edgesByTarget        map[string][]GraphEdge
+	edgeIndexFingerprint uint64
 }
 
 const (
@@ -127,7 +128,7 @@ func (G *Graph) GetEdgeInfo(id string) *GraphEdge {
 
 func (G *Graph) EdgesFromSource(uid string) []GraphEdge {
 	G.ensureEdgeIndexes()
-	edges := G.edgesBySource[uid]
+	edges := G.edgesFromSource(uid)
 	if len(edges) == 0 {
 		return nil
 	}
@@ -136,11 +137,19 @@ func (G *Graph) EdgesFromSource(uid string) []GraphEdge {
 
 func (G *Graph) EdgesToTarget(uid string) []GraphEdge {
 	G.ensureEdgeIndexes()
-	edges := G.edgesByTarget[uid]
+	edges := G.edgesToTarget(uid)
 	if len(edges) == 0 {
 		return nil
 	}
 	return append([]GraphEdge(nil), edges...)
+}
+
+func (G *Graph) edgesFromSource(uid string) []GraphEdge {
+	return G.edgesBySource[uid]
+}
+
+func (G *Graph) edgesToTarget(uid string) []GraphEdge {
+	return G.edgesByTarget[uid]
 }
 
 func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
@@ -252,9 +261,11 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 }
 
 func (G *Graph) ensureEdgeIndexes() {
+	fingerprint := G.edgeFingerprint()
 	if G.edgesBySource != nil && G.edgesByTarget != nil &&
 		countIndexedEdges(G.edgesBySource) == len(G.Edges) &&
-		countIndexedEdges(G.edgesByTarget) == len(G.Edges) {
+		countIndexedEdges(G.edgesByTarget) == len(G.Edges) &&
+		G.edgeIndexFingerprint == fingerprint {
 		return
 	}
 	G.edgesBySource = make(map[string][]GraphEdge, len(G.Edges))
@@ -263,6 +274,7 @@ func (G *Graph) ensureEdgeIndexes() {
 		G.edgesBySource[edge.MetaData.SourceUid] = append(G.edgesBySource[edge.MetaData.SourceUid], edge)
 		G.edgesByTarget[edge.MetaData.TargetUid] = append(G.edgesByTarget[edge.MetaData.TargetUid], edge)
 	}
+	G.edgeIndexFingerprint = fingerprint
 }
 
 func countIndexedEdges(index map[string][]GraphEdge) int {
@@ -271,6 +283,37 @@ func countIndexedEdges(index map[string][]GraphEdge) int {
 		count += len(edges)
 	}
 	return count
+}
+
+func (G *Graph) edgeFingerprint() uint64 {
+	var fingerprint uint64
+	for uid, edge := range G.Edges {
+		fingerprint ^= graphEdgeFingerprint(uid, edge)
+	}
+	return fingerprint
+}
+
+func graphEdgeFingerprint(uid string, edge GraphEdge) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	hash := uint64(offset64)
+	addString := func(value string) {
+		for i := 0; i < len(value); i++ {
+			hash ^= uint64(value[i])
+			hash *= prime64
+		}
+		hash ^= 0xff
+		hash *= prime64
+	}
+	addString(uid)
+	addString(edge.Uid)
+	addString(edge.MetaData.SourceUid)
+	addString(edge.MetaData.SourceTopoKey)
+	addString(edge.MetaData.TargetUid)
+	addString(edge.MetaData.TargetTopoKey)
+	return hash
 }
 
 func (G *Graph) processEdges(edges []GraphEdge, subgraph *Graph, visited *map[string]struct{}, queue *list.List, nodeCondition influxql.Expr, edgeCondition influxql.Expr, hopDir string) (*Graph, error) {
