@@ -163,17 +163,14 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 		return nil, err
 	}
 
-	// Build graph index.
-	nodeIdx, sourceEdgeIdx, targetEdgeIdx := buildGraphIndices(subTopo)
-
-	edgeList := make([]GraphEdge, 0, len(sourceEdgeIdx)*2)
-	existedEdgeID := make(map[string]struct{}, len(sourceEdgeIdx)*2)
-	visitedNodes := make(map[string]struct{}, len(nodeIdx))
+	edgeList := make([]GraphEdge, 0, len(subTopo.Edges))
+	existedEdgeID := make(map[string]struct{}, len(subTopo.Edges))
+	visitedNodes := make(map[string]struct{}, len(subTopo.Nodes))
 	visitedNodes[coreEntityID] = struct{}{}
 	nodeQueue := []string{coreEntityID}
-	nodeList := make([]GraphNode, 0, len(nodeIdx))
-	if nodes, ok := nodeIdx[coreEntityID]; ok {
-		nodeList = append(nodeList, nodes...)
+	nodeList := make([]GraphNode, 0, len(subTopo.Nodes))
+	if node, ok := subTopo.Nodes[coreEntityID]; ok {
+		nodeList = append(nodeList, node)
 	}
 	idx := 0
 
@@ -194,54 +191,48 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 		tmpIdx := 0
 		for tmpIdx < len(tmpNodeIDList) {
 			tmpEntityID := tmpNodeIDList[tmpIdx]
-			tmpSourceID, oks := sourceEdgeIdx[tmpEntityID]
-			tmpTargetID, okt := targetEdgeIdx[tmpEntityID]
-			if oks {
-				for _, tmpCase := range tmpSourceID {
-					// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
-					meta := tmpCase.MetaData
-					edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
-						"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
-					_, inExistedEdge := existedEdgeID[edgeUid]
-					_, inNode := visitedNodes[meta.TargetUid]
-					_, inTmpNode := tmpVisited[meta.TargetUid]
-					if !inExistedEdge && (inNode || inTmpNode) {
-						existedEdgeID[edgeUid] = struct{}{}
-						edgeList = append(edgeList, tmpCase)
-					}
-					if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
-						tmpVisited[meta.TargetUid] = struct{}{}
-						tmpNodeIDList = append(tmpNodeIDList, meta.TargetUid)
-						tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
-					}
+			for _, tmpCase := range subTopo.EdgesFromSource(tmpEntityID) {
+				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
+				meta := tmpCase.MetaData
+				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
+					"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
+				_, inExistedEdge := existedEdgeID[edgeUid]
+				_, inNode := visitedNodes[meta.TargetUid]
+				_, inTmpNode := tmpVisited[meta.TargetUid]
+				if !inExistedEdge && (inNode || inTmpNode) {
+					existedEdgeID[edgeUid] = struct{}{}
+					edgeList = append(edgeList, tmpCase)
+				}
+				if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
+					tmpVisited[meta.TargetUid] = struct{}{}
+					tmpNodeIDList = append(tmpNodeIDList, meta.TargetUid)
+					tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
 				}
 			}
-			if okt {
-				for _, tmpCase := range tmpTargetID {
-					// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
-					meta := tmpCase.MetaData
-					edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
-						"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
-					_, inExistedEdge := existedEdgeID[edgeUid]
-					_, inNode := visitedNodes[meta.SourceUid]
-					_, inTmpNode := tmpVisited[meta.SourceUid]
-					if !inExistedEdge && (inNode || inTmpNode) {
-						existedEdgeID[edgeUid] = struct{}{}
-						edgeList = append(edgeList, tmpCase)
-					}
-					if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
-						tmpVisited[meta.SourceUid] = struct{}{}
-						tmpNodeIDList = append(tmpNodeIDList, meta.SourceUid)
-						tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
-					}
+			for _, tmpCase := range subTopo.EdgesToTarget(tmpEntityID) {
+				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
+				meta := tmpCase.MetaData
+				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
+					"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
+				_, inExistedEdge := existedEdgeID[edgeUid]
+				_, inNode := visitedNodes[meta.SourceUid]
+				_, inTmpNode := tmpVisited[meta.SourceUid]
+				if !inExistedEdge && (inNode || inTmpNode) {
+					existedEdgeID[edgeUid] = struct{}{}
+					edgeList = append(edgeList, tmpCase)
+				}
+				if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
+					tmpVisited[meta.SourceUid] = struct{}{}
+					tmpNodeIDList = append(tmpNodeIDList, meta.SourceUid)
+					tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
 				}
 			}
 			tmpIdx += 1
 		}
 		for tmpNode := range tmpVisited {
 			if _, ok := visitedNodes[tmpNode]; !ok {
-				if n, ok := nodeIdx[tmpNode]; ok {
-					nodeList = append(nodeList, n...)
+				if n, ok := subTopo.Nodes[tmpNode]; ok {
+					nodeList = append(nodeList, n)
 				}
 				visitedNodes[tmpNode] = struct{}{}
 				nodeQueue = append(nodeQueue, tmpNode)
@@ -301,25 +292,4 @@ func extractCoreAnomalyTimestamps(records []RCAEventRecord, coreEntityID string,
 	}
 
 	return coreAnomalyTS, nil
-}
-
-func buildGraphIndices(subTopo *Graph) (
-	nodeIdx map[string][]GraphNode,
-	sourceEdgeIdx map[string][]GraphEdge,
-	targetEdgeIdx map[string][]GraphEdge,
-) {
-	nodeIdx = make(map[string][]GraphNode, len(subTopo.Nodes))
-	sourceEdgeIdx = make(map[string][]GraphEdge, len(subTopo.Edges))
-	targetEdgeIdx = make(map[string][]GraphEdge, len(subTopo.Edges))
-
-	for _, node := range subTopo.Nodes {
-		nodeIdx[node.Uid] = append(nodeIdx[node.Uid], node)
-	}
-
-	for _, edge := range subTopo.Edges {
-		sourceEdgeIdx[edge.MetaData.SourceUid] = append(sourceEdgeIdx[edge.MetaData.SourceUid], edge)
-		targetEdgeIdx[edge.MetaData.TargetUid] = append(targetEdgeIdx[edge.MetaData.TargetUid], edge)
-	}
-
-	return nodeIdx, sourceEdgeIdx, targetEdgeIdx
 }

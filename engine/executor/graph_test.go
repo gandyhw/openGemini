@@ -328,6 +328,49 @@ func TestGraphUIDSetEmptyStillFiltersAllPoints(t *testing.T) {
 	assertEqual(t, 0, len(uidSet))
 }
 
+func TestGraphEdgeAccessorsBuildMissingIndexes(t *testing.T) {
+	edgeAB := GraphEdge{
+		Uid: "a_source0::::b_source0",
+		MetaData: EdgeMetaData{
+			SourceUid: "a",
+			TargetUid: "b",
+		},
+	}
+	edgeCB := GraphEdge{
+		Uid: "c_source0::::b_source0",
+		MetaData: EdgeMetaData{
+			SourceUid: "c",
+			TargetUid: "b",
+		},
+	}
+	graph := &Graph{
+		Nodes: map[string]GraphNode{
+			"a": {Uid: "a"},
+			"b": {Uid: "b"},
+			"c": {Uid: "c"},
+		},
+		Edges: map[string]GraphEdge{
+			edgeAB.Uid: edgeAB,
+			edgeCB.Uid: edgeCB,
+		},
+	}
+
+	sourceEdges := graph.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
+
+	targetEdges := graph.EdgesToTarget("b")
+	assertEqual(t, 2, len(targetEdges))
+
+	sourceEdges[0] = edgeCB
+	sourceEdges = graph.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
+
+	assertEqual(t, 0, len(graph.EdgesFromSource("missing")))
+	assertEqual(t, 0, len(graph.EdgesToTarget("missing")))
+}
+
 func TestGraphBranch(t *testing.T) {
 	convey.Convey("sourceNode does not exist", t, func() {
 		graph := &Graph{

@@ -125,6 +125,24 @@ func (G *Graph) GetEdgeInfo(id string) *GraphEdge {
 	return nil
 }
 
+func (G *Graph) EdgesFromSource(uid string) []GraphEdge {
+	G.ensureEdgeIndexes()
+	edges := G.edgesBySource[uid]
+	if len(edges) == 0 {
+		return nil
+	}
+	return append([]GraphEdge(nil), edges...)
+}
+
+func (G *Graph) EdgesToTarget(uid string) []GraphEdge {
+	G.ensureEdgeIndexes()
+	edges := G.edgesByTarget[uid]
+	if len(edges) == 0 {
+		return nil
+	}
+	return append([]GraphEdge(nil), edges...)
+}
+
 func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
 	for _, node := range graphData.Graph.Vertex {
 		G.Nodes[node.Uid] = node
