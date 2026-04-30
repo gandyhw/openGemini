@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/influxdata/influxdb/models"
 	"github.com/openGemini/openGemini/lib/errno"
@@ -84,6 +85,7 @@ type Graph struct {
 	edgesBySource        map[string][]GraphEdge
 	edgesByTarget        map[string][]GraphEdge
 	edgeIndexFingerprint uint64
+	edgeIndexMu          sync.Mutex
 }
 
 const (
@@ -261,6 +263,9 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 }
 
 func (G *Graph) ensureEdgeIndexes() {
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+
 	fingerprint := G.edgeFingerprint()
 	if G.edgesBySource != nil && G.edgesByTarget != nil &&
 		countIndexedEdges(G.edgesBySource) == len(G.Edges) &&
@@ -313,6 +318,36 @@ func graphEdgeFingerprint(uid string, edge GraphEdge) uint64 {
 	addString(edge.MetaData.SourceTopoKey)
 	addString(edge.MetaData.TargetUid)
 	addString(edge.MetaData.TargetTopoKey)
+	addString(edge.MetaData.Kind)
+	fingerprintTags(edge.MetaData.Tags, &hash)
+	return hash
+}
+
+func fingerprintTags(tags map[string]string, hash *uint64) {
+	var fingerprint uint64
+	for key, value := range tags {
+		fingerprint ^= graphTagFingerprint(key, value)
+	}
+	*hash ^= fingerprint
+	*hash *= 1099511628211
+}
+
+func graphTagFingerprint(key, value string) uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	hash := uint64(offset64)
+	for i := 0; i < len(key); i++ {
+		hash ^= uint64(key[i])
+		hash *= prime64
+	}
+	hash ^= 0xfe
+	hash *= prime64
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= prime64
+	}
 	return hash
 }
 

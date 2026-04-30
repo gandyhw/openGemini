@@ -393,6 +393,16 @@ func TestGraphEdgeAccessorsBuildMissingIndexes(t *testing.T) {
 	sourceEdges = graphFromConstructor.EdgesFromSource("d")
 	assertEqual(t, 1, len(sourceEdges))
 	assertEqual(t, replacedEdge.Uid, sourceEdges[0].Uid)
+
+	metadataOnlyReplacement := replacedEdge
+	metadataOnlyReplacement.MetaData.Kind = "changed"
+	metadataOnlyReplacement.MetaData.Tags = map[string]string{"role": "new"}
+	graphFromConstructor.Edges[replacedEdge.Uid] = metadataOnlyReplacement
+
+	sourceEdges = graphFromConstructor.EdgesFromSource("d")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, "changed", sourceEdges[0].MetaData.Kind)
+	assertEqual(t, "new", sourceEdges[0].MetaData.Tags["role"])
 }
 
 func TestGraphBranch(t *testing.T) {
