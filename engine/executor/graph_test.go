@@ -369,6 +369,15 @@ func TestGraphEdgeAccessorsBuildMissingIndexes(t *testing.T) {
 
 	assertEqual(t, 0, len(graph.EdgesFromSource("missing")))
 	assertEqual(t, 0, len(graph.EdgesToTarget("missing")))
+
+	graphFromConstructor := NewGraph()
+	graphFromConstructor.Nodes["a"] = GraphNode{Uid: "a"}
+	graphFromConstructor.Nodes["b"] = GraphNode{Uid: "b"}
+	graphFromConstructor.Edges[edgeAB.Uid] = edgeAB
+
+	sourceEdges = graphFromConstructor.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
 }
 
 func TestGraphBranch(t *testing.T) {

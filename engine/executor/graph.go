@@ -252,7 +252,9 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 }
 
 func (G *Graph) ensureEdgeIndexes() {
-	if G.edgesBySource != nil && G.edgesByTarget != nil {
+	if G.edgesBySource != nil && G.edgesByTarget != nil &&
+		countIndexedEdges(G.edgesBySource) == len(G.Edges) &&
+		countIndexedEdges(G.edgesByTarget) == len(G.Edges) {
 		return
 	}
 	G.edgesBySource = make(map[string][]GraphEdge, len(G.Edges))
@@ -261,6 +263,14 @@ func (G *Graph) ensureEdgeIndexes() {
 		G.edgesBySource[edge.MetaData.SourceUid] = append(G.edgesBySource[edge.MetaData.SourceUid], edge)
 		G.edgesByTarget[edge.MetaData.TargetUid] = append(G.edgesByTarget[edge.MetaData.TargetUid], edge)
 	}
+}
+
+func countIndexedEdges(index map[string][]GraphEdge) int {
+	count := 0
+	for _, edges := range index {
+		count += len(edges)
+	}
+	return count
 }
 
 func (G *Graph) processEdges(edges []GraphEdge, subgraph *Graph, visited *map[string]struct{}, queue *list.List, nodeCondition influxql.Expr, edgeCondition influxql.Expr, hopDir string) (*Graph, error) {
