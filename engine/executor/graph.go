@@ -129,7 +129,9 @@ func (G *Graph) GetEdgeInfo(id string) *GraphEdge {
 }
 
 func (G *Graph) EdgesFromSource(uid string) []GraphEdge {
-	G.ensureEdgeIndexes()
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+	G.ensureEdgeIndexesLocked()
 	edges := G.edgesFromSource(uid)
 	if len(edges) == 0 {
 		return nil
@@ -138,7 +140,9 @@ func (G *Graph) EdgesFromSource(uid string) []GraphEdge {
 }
 
 func (G *Graph) EdgesToTarget(uid string) []GraphEdge {
-	G.ensureEdgeIndexes()
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+	G.ensureEdgeIndexesLocked()
 	edges := G.edgesToTarget(uid)
 	if len(edges) == 0 {
 		return nil
@@ -155,6 +159,12 @@ func (G *Graph) edgesToTarget(uid string) []GraphEdge {
 }
 
 func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+	return G.batchInsertNodes(graphData)
+}
+
+func (G *Graph) batchInsertNodes(graphData GraphData) bool {
 	for _, node := range graphData.Graph.Vertex {
 		G.Nodes[node.Uid] = node
 	}
@@ -162,6 +172,12 @@ func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
 }
 
 func (G *Graph) BatchInsertEdges(graphData GraphData) (bool, error) {
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+	return G.batchInsertEdges(graphData)
+}
+
+func (G *Graph) batchInsertEdges(graphData GraphData) (bool, error) {
 	if G.edgesBySource == nil {
 		G.edgesBySource = make(map[string][]GraphEdge)
 	}
@@ -176,7 +192,6 @@ func (G *Graph) BatchInsertEdges(graphData GraphData) (bool, error) {
 	for edgeId, edge := range G.Edges {
 		sourceNode, ok := G.Nodes[edge.MetaData.SourceUid]
 		if !ok {
-			// todo: handle the condition where the source node or target node does not exist
 			return false, errors.New("this edge's sourceNode does not exist")
 		}
 		sourceNode.OutEdges = append(sourceNode.OutEdges, edgeId)
@@ -197,26 +212,33 @@ func (G *Graph) CreateGraph(jsonGraphData string) (bool, error) {
 	if err != nil {
 		return false, errno.NewError(errno.TopoGraphParseFailed, "error parsing JSON")
 	}
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
 	G.Nodes = make(map[string]GraphNode, len(resp.Data.Graph.Vertex))
 	G.Edges = make(map[string]GraphEdge, len(resp.Data.Graph.Edges))
 	G.edgesBySource = make(map[string][]GraphEdge, len(resp.Data.Graph.Edges))
 	G.edgesByTarget = make(map[string][]GraphEdge, len(resp.Data.Graph.Edges))
-	if !G.BatchInsertNodes(resp.Data) {
+	G.edgeIndexFingerprint = 0
+	if !G.batchInsertNodes(resp.Data) {
 		return false, nil
 	}
-	if ok, err := G.BatchInsertEdges(resp.Data); err != nil || !ok {
+	if ok, err := G.batchInsertEdges(resp.Data); err != nil || !ok {
 		return false, err
 	}
+	G.edgeIndexFingerprint = G.edgeFingerprint()
 	return true, nil
 }
 
 func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition influxql.Expr, edgeCondition influxql.Expr) (*Graph, error) {
+	G.edgeIndexMu.Lock()
+	defer G.edgeIndexMu.Unlock()
+
+	G.ensureEdgeIndexesLocked()
+
 	startNode, ok := G.Nodes[startNodeId]
 	if !ok {
 		return nil, errno.NewError(errno.TopoStartNodeNotFound, startNodeId)
 	}
-
-	G.ensureEdgeIndexes()
 
 	visited := make(map[string]struct{})
 	queue := list.New()
@@ -265,7 +287,10 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 func (G *Graph) ensureEdgeIndexes() {
 	G.edgeIndexMu.Lock()
 	defer G.edgeIndexMu.Unlock()
+	G.ensureEdgeIndexesLocked()
+}
 
+func (G *Graph) ensureEdgeIndexesLocked() {
 	fingerprint := G.edgeFingerprint()
 	if G.edgesBySource != nil && G.edgesByTarget != nil &&
 		countIndexedEdges(G.edgesBySource) == len(G.Edges) &&
