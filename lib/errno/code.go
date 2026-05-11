@@ -117,6 +117,12 @@ const (
 	MisMatchShardAndIndex        = 1133
 	NoNodeTraits                 = 1134
 	FieldIsLiteral               = 1135
+	TopoFetchFailed              = 1136
+	TopoGraphParseFailed         = 1137
+	TopoStartNodeNotFound        = 1138
+	TopoLimitExceeded            = 1139
+	TopoUIDSetLimitExceeded      = 1140
+	RCAEventSchemaInvalid        = 1141
 )
 
 // promql2influxql

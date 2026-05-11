@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openGemini/openGemini/lib/errno"
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/influxql"
 	"github.com/smartystreets/goconvey/convey"
 )
@@ -293,6 +294,115 @@ func TestGraph(t *testing.T) {
 			assertEqual(t, expectedEdge.MetaData.SourceUid, actualEdge.MetaData.SourceUid)
 		}
 	}
+}
+
+func TestGraphUIDSetLimit(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{Uid: "n1"}
+	graph.Nodes["n2"] = GraphNode{Uid: "n2"}
+
+	uidSet, err := graph.UIDSet(2)
+	assertEqual(t, nil, err)
+	assertEqual(t, 2, len(uidSet))
+
+	_, err = graph.UIDSet(1)
+	assertEqual(t, true, errno.Equal(err, errno.TopoUIDSetLimitExceeded))
+	assertEqual(t, "topo uid set size exceeds max-uid-set-size: 1", err.Error())
+}
+
+func TestGraphClassifiedTopoErrors(t *testing.T) {
+	graph := NewGraph()
+	ok, err := graph.CreateGraph("{")
+	assertEqual(t, false, ok)
+	assertEqual(t, true, errno.Equal(err, errno.TopoGraphParseFailed))
+
+	graph.Nodes["n1"] = GraphNode{Uid: "n1"}
+	_, err = graph.MultiHopFilter("missing", 1, nil, nil)
+	assertEqual(t, true, errno.Equal(err, errno.TopoStartNodeNotFound))
+}
+
+func TestGraphUIDSetEmptyStillFiltersAllPoints(t *testing.T) {
+	graph := NewGraph()
+	uidSet, err := graph.UIDSet(1)
+	assertEqual(t, nil, err)
+	assertEqual(t, 0, len(uidSet))
+}
+
+func TestGraphEdgeAccessorsBuildMissingIndexes(t *testing.T) {
+	edgeAB := GraphEdge{
+		Uid: "a_source0::::b_source0",
+		MetaData: EdgeMetaData{
+			SourceUid: "a",
+			TargetUid: "b",
+		},
+	}
+	edgeCB := GraphEdge{
+		Uid: "c_source0::::b_source0",
+		MetaData: EdgeMetaData{
+			SourceUid: "c",
+			TargetUid: "b",
+		},
+	}
+	graph := &Graph{
+		Nodes: map[string]GraphNode{
+			"a": {Uid: "a"},
+			"b": {Uid: "b"},
+			"c": {Uid: "c"},
+		},
+		Edges: map[string]GraphEdge{
+			edgeAB.Uid: edgeAB,
+			edgeCB.Uid: edgeCB,
+		},
+	}
+
+	sourceEdges := graph.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
+
+	targetEdges := graph.EdgesToTarget("b")
+	assertEqual(t, 2, len(targetEdges))
+
+	sourceEdges[0] = edgeCB
+	sourceEdges = graph.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
+
+	assertEqual(t, 0, len(graph.EdgesFromSource("missing")))
+	assertEqual(t, 0, len(graph.EdgesToTarget("missing")))
+
+	graphFromConstructor := NewGraph()
+	graphFromConstructor.Nodes["a"] = GraphNode{Uid: "a"}
+	graphFromConstructor.Nodes["b"] = GraphNode{Uid: "b"}
+	graphFromConstructor.Edges[edgeAB.Uid] = edgeAB
+
+	sourceEdges = graphFromConstructor.EdgesFromSource("a")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, edgeAB.Uid, sourceEdges[0].Uid)
+
+	replacedEdge := GraphEdge{
+		Uid: "d_source0::::b_source0",
+		MetaData: EdgeMetaData{
+			SourceUid: "d",
+			TargetUid: "b",
+		},
+	}
+	delete(graphFromConstructor.Edges, edgeAB.Uid)
+	graphFromConstructor.Edges[replacedEdge.Uid] = replacedEdge
+
+	assertEqual(t, 0, len(graphFromConstructor.EdgesFromSource("a")))
+	sourceEdges = graphFromConstructor.EdgesFromSource("d")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, replacedEdge.Uid, sourceEdges[0].Uid)
+
+	metadataOnlyReplacement := replacedEdge
+	metadataOnlyReplacement.MetaData.Kind = "changed"
+	metadataOnlyReplacement.MetaData.Tags = map[string]string{"role": "new"}
+	graphFromConstructor.Edges[replacedEdge.Uid] = metadataOnlyReplacement
+
+	sourceEdges = graphFromConstructor.EdgesFromSource("d")
+	assertEqual(t, 1, len(sourceEdges))
+	assertEqual(t, "changed", sourceEdges[0].MetaData.Kind)
+	assertEqual(t, "new", sourceEdges[0].MetaData.Tags["role"])
 }
 
 func TestGraphBranch(t *testing.T) {

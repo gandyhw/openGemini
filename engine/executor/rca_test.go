@@ -547,17 +547,20 @@ var annotation []string = []string{
 	`{
         "description": "xxx",
         "start_time": 1712411288000,
-        "end_time": 1712443688000
+        "end_time": 1712443688000,
+        "create_time": 1712411288000
     }`,
 	`{
         "description": "xxx",
         "start_time": 1712440088000,
-        "end_time": 1712443688
+        "end_time": 1712443688,
+        "create_time": 1712440088000
     }`,
 	`{
         "description": "xxx",
         "start_time": 1712454488000,
-        "end_time": ""
+        "end_time": "",
+        "create_time": 1712454488000
     }`,
 	`{
         "description": "xxx",

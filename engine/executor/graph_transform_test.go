@@ -16,11 +16,16 @@ package executor_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openGemini/openGemini/engine/executor"
 	"github.com/openGemini/openGemini/engine/hybridqp"
+	"github.com/openGemini/openGemini/lib/errno"
+	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/influxql"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
@@ -60,7 +65,66 @@ func TestGraphTransform(t *testing.T) {
 
 	stmt.StartNodeId = "1"
 	err = trans.Work(context.Background())
+	assert.True(t, errno.Equal(err, errno.TopoStartNodeNotFound))
 	assert.Equal(t, err.Error(), "MultiHopFilter startNodeId not found 1")
+}
+
+func TestGraphTransformClassifiedTopoFailures(t *testing.T) {
+	t.Cleanup(func() {
+		util.SetTopoManagerOptions("", 0, 0)
+		executor.SetTopoLimits(100000, 200000, 10000)
+	})
+
+	stmt := &influxql.GraphStatement{
+		HopNum:      3,
+		StartNodeId: "ELB",
+	}
+
+	t.Run("topo fetch", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+		util.SetTopoManagerOptions(server.URL, time.Second, 0)
+
+		trans, err := executor.NewGraphTransform(stmt)
+		assert.NoError(t, err)
+		err = trans.Work(context.Background())
+		assert.True(t, errno.Equal(err, errno.TopoFetchFailed))
+	})
+
+	t.Run("topo parse", func(t *testing.T) {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("{"))
+		}))
+		defer server.Close()
+		util.SetTopoManagerOptions(server.URL, time.Second, 0)
+
+		trans, err := executor.NewGraphTransform(stmt)
+		assert.NoError(t, err)
+		err = trans.Work(context.Background())
+		assert.True(t, errno.Equal(err, errno.TopoGraphParseFailed))
+	})
+
+	t.Run("topo graph limit", func(t *testing.T) {
+		util.SetTopoManagerOptions("", 0, 0)
+		executor.SetTopoLimits(1, 200000, 10000)
+
+		trans, err := executor.NewGraphTransform(stmt)
+		assert.NoError(t, err)
+		err = trans.Work(context.Background())
+		assert.True(t, errno.Equal(err, errno.TopoLimitExceeded))
+	})
+
+	t.Run("topo edge limit", func(t *testing.T) {
+		util.SetTopoManagerOptions("", 0, 0)
+		executor.SetTopoLimits(100000, 1, 10000)
+
+		trans, err := executor.NewGraphTransform(stmt)
+		assert.NoError(t, err)
+		err = trans.Work(context.Background())
+		assert.True(t, errno.Equal(err, errno.TopoLimitExceeded))
+	})
 }
 
 func TestGraphTransformAddAdditionalConfig(t *testing.T) {

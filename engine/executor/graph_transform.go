@@ -159,12 +159,17 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	}
 
 	var topoData string
-	if util.GetClientConf().Conf.Path != "" {
-		response, err := util.GetClientConf().SendGetRequest(util.HttpsClient, param, startTime, endTime)
+	clientConf := util.GetClientConf()
+	provider := util.NewHTTPTopoProvider(clientConf, util.HttpsClient)
+	if provider.Configured() {
+		response, err := util.FetchTopo(ctx, provider, param, startTime, endTime)
 		if err == nil && response != "" {
 			topoData = response
 		} else {
-			return err
+			if err == nil {
+				err = errors.New("empty topo response")
+			}
+			return errno.NewError(errno.TopoFetchFailed, err)
 		}
 	} else {
 		topoData = mockGetTimeGraph()
@@ -173,10 +178,19 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	graph := NewGraph()
 	success, err := graph.CreateGraph(topoData)
 	if !success {
+		if errno.Equal(err, errno.TopoGraphParseFailed) {
+			return err
+		}
+		return errno.NewError(errno.TopoGraphParseFailed, err)
+	}
+	if err := checkTopoGraphLimits(graph); err != nil {
 		return err
 	}
 	subGraph, err := graph.MultiHopFilter(trans.stmt.StartNodeId, trans.stmt.HopNum, trans.stmt.NodeCondition, trans.stmt.EdgeCondition)
 	if err != nil {
+		if errno.Equal(err, errno.TopoStartNodeNotFound) {
+			return err
+		}
 		return err
 	}
 	trans.outputChunk = trans.chunkBuilder.NewChunk("")
@@ -184,6 +198,18 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 	trans.outputChunk.AppendTagsAndIndex(*NewChunkTagsV2(nil), 0)
 	trans.outputChunk.SetGraph(subGraph)
 	trans.output.State <- trans.outputChunk
+	return nil
+}
+
+func checkTopoGraphLimits(graph *Graph) error {
+	maxNodes := getTopoMaxGraphNodes()
+	if maxNodes > 0 && len(graph.Nodes) > maxNodes {
+		return errno.NewError(errno.TopoLimitExceeded, "nodes", "max-graph-nodes", maxNodes)
+	}
+	maxEdges := getTopoMaxGraphEdges()
+	if maxEdges > 0 && len(graph.Edges) > maxEdges {
+		return errno.NewError(errno.TopoLimitExceeded, "edges", "max-graph-edges", maxEdges)
+	}
 	return nil
 }
 

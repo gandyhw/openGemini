@@ -15,12 +15,10 @@
 package executor
 
 import (
-	"encoding/json"
 	"errors"
 	"sort"
 
 	"github.com/openGemini/openGemini/engine/hybridqp"
-	"go.uber.org/zap"
 )
 
 const (
@@ -80,76 +78,42 @@ func isWithinTSRange(targetTS int64, sortedTSList []int64, closeHourMS int64) bo
 	return false
 }
 
-func isAnomaly(anomalyTS []int64, curEntityID string, chunks []Chunk, colMap map[string]int) (bool, error) {
+func isAnomaly(anomalyTS []int64, curEntityID string, records []RCAEventRecord) (bool, error) {
 	const (
 		halfHourMs = 30 * 60 * 1000
 		twoHourMs  = 120 * 60 * 1000
 	)
 
-	for _, chunk := range chunks {
-		columns := chunk.Columns()
-		idCol := columns[colMap[ID]]
-		entityIDCol := columns[colMap[EntityID]]
-		typeCol := columns[colMap[Type]]
-		annotationsCol := columns[colMap[Annotations]]
-		for i := 0; i < idCol.Length(); i++ {
-			if entityIDCol.StringValue(i) != curEntityID {
-				continue
+	for _, record := range records {
+		if record.EntityID != curEntityID {
+			continue
+		}
+		switch record.Type {
+		case ANOMALY:
+			for _, ts := range record.Timestamps {
+				if isWithinTSRange(ts, anomalyTS, halfHourMs) {
+					return true, nil
+				}
 			}
-			tmp := annotationsCol.StringValue(i)
-			annotations := make(map[string]interface{})
-			err := json.Unmarshal([]byte(tmp), &annotations)
-			if err != nil {
-				log.Error("RCA Error: unable to unmarshal annotations", zap.Error(err))
-				return false, err
+		case ALARM:
+			if record.HasEndTS {
+				if isWithinTSRange(record.StartTS, anomalyTS, halfHourMs) {
+					return true, nil
+				}
+			} else if isWithinTSRange(record.StartTS, anomalyTS, twoHourMs) {
+				return true, nil
 			}
-			switch typeCol.StringValue(i) {
-			case ANOMALY:
-				timestamps, ok := annotations[Timestamps]
-				if !ok {
-					return false, errors.New("RCA Error: timestamps not found in annotations")
+		case EVENT:
+			if record.HasEndTS {
+				if isWithinTSRange(record.EndTS, anomalyTS, halfHourMs) {
+					return true, nil
 				}
-				for _, ts := range timestamps.([]interface{}) {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
+			} else if record.HasStartTS {
+				if isWithinTSRange(record.StartTS, anomalyTS, twoHourMs) {
+					return true, nil
 				}
-			case ALARM:
-				ts, ok := annotations[StartTS]
-				if !ok {
-					return false, errors.New("RCA Error: fired timestamp not found in annotations")
-				}
-				_, ok = annotations[EndTS]
-				if ok {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
-				} else {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				}
-			case EVENT:
-				ts, ok := annotations[CreatedTS]
-				if !ok {
-					return false, errors.New("RCA Error: created timestamp not found in annotations")
-				}
-
-				tsEnd, okEnd := annotations[EndTS]
-				tsStart, okStart := annotations[StartTS]
-				if okEnd {
-					if isWithinTSRange(int64(tsEnd.(float64)), anomalyTS, halfHourMs) {
-						return true, nil
-					}
-				} else if okStart {
-					if isWithinTSRange(int64(tsStart.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				} else {
-					if isWithinTSRange(int64(ts.(float64)), anomalyTS, twoHourMs) {
-						return true, nil
-					}
-				}
+			} else if isWithinTSRange(record.CreatedTS, anomalyTS, twoHourMs) {
+				return true, nil
 			}
 		}
 	}
@@ -188,29 +152,32 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 	}
 	BFSNarrow := algoParams.BFSNarrow
 
-	// Extract anomaly timestamps.
-	coreAnomalyTS, err := extractCoreAnomalyTimestamps(chunks, colMap, coreEntityID, taskMeta)
+	records, err := BuildRCAEventRecords(chunks, colMap)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build graph index.
-	nodeIdx, sourceEdgeIdx, targetEdgeIdx := buildGraphIndices(subTopo)
+	// Extract anomaly timestamps.
+	coreAnomalyTS, err := extractCoreAnomalyTimestamps(records, coreEntityID, taskMeta)
+	if err != nil {
+		return nil, err
+	}
 
-	edgeList := make([]GraphEdge, 0, len(sourceEdgeIdx)*2)
-	existedEdgeID := make(map[string]struct{}, len(sourceEdgeIdx)*2)
-	visitedNodes := make(map[string]struct{}, len(nodeIdx))
+	subTopo.ensureEdgeIndexes()
+	edgeList := make([]GraphEdge, 0, len(subTopo.Edges))
+	existedEdgeID := make(map[string]struct{}, len(subTopo.Edges))
+	visitedNodes := make(map[string]struct{}, len(subTopo.Nodes))
 	visitedNodes[coreEntityID] = struct{}{}
 	nodeQueue := []string{coreEntityID}
-	nodeList := make([]GraphNode, 0, len(nodeIdx))
-	if nodes, ok := nodeIdx[coreEntityID]; ok {
-		nodeList = append(nodeList, nodes...)
+	nodeList := make([]GraphNode, 0, len(subTopo.Nodes))
+	if node, ok := subTopo.Nodes[coreEntityID]; ok {
+		nodeList = append(nodeList, node)
 	}
 	idx := 0
 
 	for idx < len(nodeQueue) {
 		curEntityID := nodeQueue[idx]
-		anomaly, err := isAnomaly(coreAnomalyTS, curEntityID, chunks, colMap)
+		anomaly, err := isAnomaly(coreAnomalyTS, curEntityID, records)
 		if err != nil {
 			return nil, err
 		}
@@ -225,54 +192,48 @@ func FaultDemarcation(chunks []Chunk, subTopo *Graph, algoParams AlgoParam, colM
 		tmpIdx := 0
 		for tmpIdx < len(tmpNodeIDList) {
 			tmpEntityID := tmpNodeIDList[tmpIdx]
-			tmpSourceID, oks := sourceEdgeIdx[tmpEntityID]
-			tmpTargetID, okt := targetEdgeIdx[tmpEntityID]
-			if oks {
-				for _, tmpCase := range tmpSourceID {
-					// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
-					meta := tmpCase.MetaData
-					edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
-						"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
-					_, inExistedEdge := existedEdgeID[edgeUid]
-					_, inNode := visitedNodes[meta.TargetUid]
-					_, inTmpNode := tmpVisited[meta.TargetUid]
-					if !inExistedEdge && (inNode || inTmpNode) {
-						existedEdgeID[edgeUid] = struct{}{}
-						edgeList = append(edgeList, tmpCase)
-					}
-					if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
-						tmpVisited[meta.TargetUid] = struct{}{}
-						tmpNodeIDList = append(tmpNodeIDList, meta.TargetUid)
-						tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
-					}
+			for _, tmpCase := range subTopo.edgesFromSource(tmpEntityID) {
+				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
+				meta := tmpCase.MetaData
+				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
+					"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
+				_, inExistedEdge := existedEdgeID[edgeUid]
+				_, inNode := visitedNodes[meta.TargetUid]
+				_, inTmpNode := tmpVisited[meta.TargetUid]
+				if !inExistedEdge && (inNode || inTmpNode) {
+					existedEdgeID[edgeUid] = struct{}{}
+					edgeList = append(edgeList, tmpCase)
+				}
+				if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
+					tmpVisited[meta.TargetUid] = struct{}{}
+					tmpNodeIDList = append(tmpNodeIDList, meta.TargetUid)
+					tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
 				}
 			}
-			if okt {
-				for _, tmpCase := range tmpTargetID {
-					// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
-					meta := tmpCase.MetaData
-					edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
-						"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
-					_, inExistedEdge := existedEdgeID[edgeUid]
-					_, inNode := visitedNodes[meta.SourceUid]
-					_, inTmpNode := tmpVisited[meta.SourceUid]
-					if !inExistedEdge && (inNode || inTmpNode) {
-						existedEdgeID[edgeUid] = struct{}{}
-						edgeList = append(edgeList, tmpCase)
-					}
-					if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
-						tmpVisited[meta.SourceUid] = struct{}{}
-						tmpNodeIDList = append(tmpNodeIDList, meta.SourceUid)
-						tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
-					}
+			for _, tmpCase := range subTopo.edgesToTarget(tmpEntityID) {
+				// edge.uid == SourceUid_SourceTopoKey::::TargetUid_TargetTopoKey
+				meta := tmpCase.MetaData
+				edgeUid := meta.SourceUid + "_" + meta.SourceTopoKey +
+					"::::" + meta.TargetUid + "_" + meta.TargetTopoKey
+				_, inExistedEdge := existedEdgeID[edgeUid]
+				_, inNode := visitedNodes[meta.SourceUid]
+				_, inTmpNode := tmpVisited[meta.SourceUid]
+				if !inExistedEdge && (inNode || inTmpNode) {
+					existedEdgeID[edgeUid] = struct{}{}
+					edgeList = append(edgeList, tmpCase)
+				}
+				if tmpHopCount[tmpIdx] < BFSHopCount && !inTmpNode {
+					tmpVisited[meta.SourceUid] = struct{}{}
+					tmpNodeIDList = append(tmpNodeIDList, meta.SourceUid)
+					tmpHopCount = append(tmpHopCount, tmpHopCount[tmpIdx]+1)
 				}
 			}
 			tmpIdx += 1
 		}
 		for tmpNode := range tmpVisited {
 			if _, ok := visitedNodes[tmpNode]; !ok {
-				if n, ok := nodeIdx[tmpNode]; ok {
-					nodeList = append(nodeList, n...)
+				if n, ok := subTopo.Nodes[tmpNode]; ok {
+					nodeList = append(nodeList, n)
 				}
 				visitedNodes[tmpNode] = struct{}{}
 				nodeQueue = append(nodeQueue, tmpNode)
@@ -299,55 +260,26 @@ func buildGraph(nodeList []GraphNode, edgeList []GraphEdge) *Graph {
 	return &Graph{Nodes: nodes, Edges: edges}
 }
 
-func extractCoreAnomalyTimestamps(chunks []Chunk, colMap map[string]int, coreEntityID string, taskMeta map[string]interface{}) ([]int64, error) {
+func extractCoreAnomalyTimestamps(records []RCAEventRecord, coreEntityID string, taskMeta map[string]interface{}) ([]int64, error) {
 	var coreAnomalyTS []int64
 	found := false
 
-	for _, chunk := range chunks {
-		columns := chunk.Columns()
-		idCol := columns[colMap[ID]]
-		entityIDCol := columns[colMap[EntityID]]
-		typeCol := columns[colMap[Type]]
-		annotationsCol := columns[colMap[Annotations]]
+	for _, record := range records {
+		if record.EntityID != coreEntityID {
+			continue
+		}
+		found = true
 
-		for i := 0; i < idCol.Length(); i++ {
-			if entityIDCol.StringValue(i) != coreEntityID {
-				continue
-			}
-			found = true
-			tmp := annotationsCol.StringValue(i)
-			var annotations map[string]interface{}
-			if err := json.Unmarshal([]byte(tmp), &annotations); err != nil {
-				log.Error("RCA Error: unmarshal annotations failed",
-					zap.Error(err),
-					zap.String("entityID", coreEntityID))
-				continue
-			}
-
-			switch typeCol.StringValue(i) {
-			case ANOMALY:
-				timestamps, ok := annotations[Timestamps]
-				if !ok {
-					return nil, errors.New("RCA Error: timestamps not found in annotations")
-				}
-				for _, ts := range timestamps.([]interface{}) {
-					coreAnomalyTS = append(coreAnomalyTS, int64(ts.(float64)))
-				}
-			case ALARM:
-				timestamp, ok := annotations[StartTS]
-				if !ok {
-					return nil, errors.New("RCA Error: fired timestamp not found in annotations")
-				}
-				coreAnomalyTS = append(coreAnomalyTS, int64(timestamp.(float64)))
-			case EVENT:
-				timestamp, ok := annotations[StartTS]
-				if !ok {
-					timestamp, ok = annotations[CreatedTS]
-					if !ok {
-						return nil, errors.New("RCA Error: created timestamp not found in annotations")
-					}
-				}
-				coreAnomalyTS = append(coreAnomalyTS, int64(timestamp.(float64)))
+		switch record.Type {
+		case ANOMALY:
+			coreAnomalyTS = append(coreAnomalyTS, record.Timestamps...)
+		case ALARM:
+			coreAnomalyTS = append(coreAnomalyTS, record.StartTS)
+		case EVENT:
+			if record.HasStartTS {
+				coreAnomalyTS = append(coreAnomalyTS, record.StartTS)
+			} else {
+				coreAnomalyTS = append(coreAnomalyTS, record.CreatedTS)
 			}
 		}
 	}
@@ -361,25 +293,4 @@ func extractCoreAnomalyTimestamps(chunks []Chunk, colMap map[string]int, coreEnt
 	}
 
 	return coreAnomalyTS, nil
-}
-
-func buildGraphIndices(subTopo *Graph) (
-	nodeIdx map[string][]GraphNode,
-	sourceEdgeIdx map[string][]GraphEdge,
-	targetEdgeIdx map[string][]GraphEdge,
-) {
-	nodeIdx = make(map[string][]GraphNode, len(subTopo.Nodes))
-	sourceEdgeIdx = make(map[string][]GraphEdge, len(subTopo.Edges))
-	targetEdgeIdx = make(map[string][]GraphEdge, len(subTopo.Edges))
-
-	for _, node := range subTopo.Nodes {
-		nodeIdx[node.Uid] = append(nodeIdx[node.Uid], node)
-	}
-
-	for _, edge := range subTopo.Edges {
-		sourceEdgeIdx[edge.MetaData.SourceUid] = append(sourceEdgeIdx[edge.MetaData.SourceUid], edge)
-		targetEdgeIdx[edge.MetaData.TargetUid] = append(targetEdgeIdx[edge.MetaData.TargetUid], edge)
-	}
-
-	return nodeIdx, sourceEdgeIdx, targetEdgeIdx
 }

@@ -62,6 +62,7 @@ type InTransform struct {
 	runingState     InTransformRunningState
 	workHelper      func(c Chunk)
 	tagValuesAst    *influxql.ShowTagValuesStatement
+	topoErr         error
 
 	BufColumnMap map[interface{}]struct{}
 }
@@ -166,6 +167,9 @@ func (trans *InTransform) checkGraphFieldType(innerVarRef *influxql.VarRef) erro
 	if trans.OuterVarRef.Type != influxql.String && trans.OuterVarRef.Type != influxql.Tag {
 		return fmt.Errorf("InTransform outerVarRef.typ err when innerVarRef.typ is graph")
 	}
+	if trans.OuterVarRef.Val != "uid" {
+		return fmt.Errorf("wrong outerVarRef.val of InTransform for graph")
+	}
 	// todo: more abundant graph.col of where in
 	if innerVarRef.Val != "uid" {
 		return fmt.Errorf("wrong innerVarRef.val of InTransform for graph")
@@ -219,6 +223,9 @@ func (trans *InTransform) Work(ctx context.Context) error {
 				}
 			}
 			trans.workHelper(c)
+			if trans.topoErr != nil {
+				return trans.topoErr
+			}
 		case <-ctx.Done():
 			return nil
 		}
@@ -330,7 +337,12 @@ func (trans *InTransform) AddGraphChunkToBufColumn(c Chunk) {
 	if !ok || graph == nil {
 		return
 	}
-	graph.addToBufMap(trans.BufColumnMap)
+	uidSet, err := graph.UIDSet(getTopoMaxUIDSetSize())
+	if err != nil {
+		trans.topoErr = err
+		return
+	}
+	trans.BufColumnMap = uidSet
 }
 
 func (trans *InTransform) AddTagValsToBufColumn(s influxql.TablesTagSets) {

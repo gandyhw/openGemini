@@ -267,6 +267,12 @@ var messageMap = map[Errno]*Message{
 	MisMatchShardAndIndex:          newWarnMessage("misMatched shardId:%d and indexId:%d, shardEndTier:%d, indexEndTier:%d", ModuleQueryEngine),
 	NoNodeTraits:                   newWarnMessage("there is no node traits for query push down", ModuleQueryEngine),
 	FieldIsLiteral:                 newWarnMessage("field must contain at least one variable", ModuleQueryEngine),
+	TopoFetchFailed:                newWarnMessage("topo fetch failed: %v", ModuleQueryEngine),
+	TopoGraphParseFailed:           newWarnMessage("%v", ModuleQueryEngine),
+	TopoStartNodeNotFound:          newWarnMessage("MultiHopFilter startNodeId not found %s", ModuleQueryEngine),
+	TopoLimitExceeded:              newWarnMessage("topo graph %s exceeds %s: %d", ModuleQueryEngine),
+	TopoUIDSetLimitExceeded:        newWarnMessage("topo uid set size exceeds max-uid-set-size: %d", ModuleQueryEngine),
+	RCAEventSchemaInvalid:          newWarnMessage("invalid RCA event schema: %v", ModuleQueryEngine),
 
 	// query interface error codes
 	ReverseValueIllegal:     newWarnMessage("reverse value is illegal", ModuleQueryInterface),

@@ -202,7 +202,8 @@ func NewServer(conf config.Config, info app.ServerInfo, logger *Logger.Logger) (
 	}
 
 	s.initRecordWriterService()
-	util.SetTopoManagerUrl(c.Topo.TopoManagerUrl)
+	util.SetTopoManagerOptions(c.Topo.TopoManagerUrl, time.Duration(c.Topo.RequestTimeout), c.Topo.MaxResponseBytes)
+	executor.SetTopoLimits(c.Topo.MaxGraphNodes, c.Topo.MaxGraphEdges, c.Topo.MaxUIDSetSize)
 	return s, nil
 }
 
