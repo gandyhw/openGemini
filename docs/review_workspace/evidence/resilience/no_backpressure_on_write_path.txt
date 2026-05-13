@@ -1,0 +1,19 @@
+File: coordinator/points_writer.go:93-100
+PointsWriter has NO buffered channel, no rate limiter, no backpressure mechanism.
+The write path is:
+  HTTP handler -> PointsWriter.WritePoints() -> Engine.WriteRows() -> Shard.WriteRows() -> WAL
+All synchronous, all in the same goroutine until WAL write.
+
+File: lib/util/lifted/influx/httpd/handler.go
+HTTP handler directly calls PointsWriter.WritePoints() without any admission control.
+
+File: lib/config/store.go:347
+WriteConcurrentLimit: 0   // default value 0 = unlimited
+
+File: lib/backup/backup.go
+Backup is file-copy based. No backpressure support during backup.
+
+Impact: Under 1B logs/s load, a write burst will:
+1. OOM the ts-store node (no backpressure)
+2. Cause cascading failures across the cluster
+3. Have no mechanism to reject or throttle excess writes

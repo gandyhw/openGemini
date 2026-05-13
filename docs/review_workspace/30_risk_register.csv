@@ -1,0 +1,26 @@
+ID,维度,标题,现状,缺陷或风险,影响面,概率,严重度,证据(文件:行号),建议,成本档,优先级
+F1,韧性,默认构建无脑裂防护,engine_ha.go 调用 Fencer.Fence() 但非 streamfs 构建下 fencer 为 no-op,"网络分区下出现双主, 数据不一致",全局,高,5,engine/fence.go:23-33; engine/fence_streamfs.go:39-63,默认构建启用基础文件级 fencing,S,1
+F2,韧性,WAL fsync 静默跳过,backSync 使用 CAS 跳过正在进行的 sync,每次 crash 丢失最多 200ms 数据 (1B logs/s 约 2 亿条),全局,高,5,lib/raftlog/storage.go:347-348; lib/config/wal.go:24,提供同步 fsync 模式选项 + sync barrier,S,2
+F3,韧性,无磁盘空间保护,全代码库无 ENOSPC 检测,磁盘写满=WAL/TSSP 写入失败→不可恢复崩溃,单点→全局,高,5,搜索 ENOSPC/disk-full 无结果; engine/sysctrl.go:307-316,实现磁盘水印机制 (hard/soft limit) + 拒绝写入,M,3
+F4,架构,写入路径无反压/缓冲,HTTP handler→coordinator→shard→WAL 全程同步无缓冲,"1B logs/s 突发 → ts-store OOM → 级联故障",全局,高,5,coordinator/points_writer.go:93-100; lib/config/store.go:347,前置 admission control (token bucket) + 有界缓冲队列,L,4
+F5,架构+RCA,跨模关联查询缺失,Metric/Log/Trace/Topo 四模型完全独立 无跨模 join 执行,生产 RCA 关联下钻链路无法闭环,全局,高,5,engine/executor/graph_transform.go:137-188(拓扑外挂); 无 cross-measurement join 执行,实现 HashJoin/MergeJoin 跨模算子+统一查询计划器,XL,5
+F6,架构,ts-meta 单 Raft 组瓶颈,单 Hashicorp Raft 组管理全集群元数据 FSM ApplyBatch 双锁串行化,100K 实体下: 元数据操作延迟上升→写入全集群不可用,全局,高,4,app/ts-meta/meta/store_fsm.go:33-75; store.go:70-72,拆分多 Raft 组或将元数据分层(拓扑 vs 数据字典),XL,6
+F7,性能,LSM Compaction 写放大 10-18x,7 级 compaction L0→L1 每轮出现 6 次,1B logs/s 需 3.6 TB/s IO 带宽→存储层崩溃,全局,高,4,engine/immutable/compact.go:30-55,减少 level 到 3-4 层 + 日志专用 compaction 策略,L,7
+F8,韧性,备份一致性缺失,仅有文件级拷贝 无跨节点快照 无备份调度器,RPO=天级 RTO=小时级 恢复后数据一致性无保证,全局,高,4,lib/backup/backup.go:47-107; app/ts-recover/recover/recover.go:51-72,实现集群级一致性快照 + 自动备份调度 + 定期恢复演练,M,8
+F9,性能,零 SIMD/向量化执行,全标量执行 无 SIMD 指令 算子内部逐行循环 for i:=0; i<rows; i++,查询延迟高 (filter/agg 有 3-6x 优化空间),全局,高,4,engine/executor/filter_transform.go:154-189; 全仓库搜索 SIMD/avx/sse 无结果,实现关键算子(Filter/Aggregate)的 SIMD 向量化,L,9
+F10,质量,FSM panic 滥用 (596 处全仓库),Raft 状态机中 proto 解析失败也 panic,ts-meta 进程崩溃→全集群写入不可用,全局,中,4,app/ts-meta/meta/store_fsm.go:50-52; store.go 中 20 处 proto panic,FSM panic 全部改为 error return + 日志告警,M,10
+F11,质量+RCA,日志全链路薄弱,无 LogQL; 全文索引代码存在但未确认接入 OTLP log body 查询; 压缩比仅 2-4x; 与 metrics 混存,日志查询延迟高 无法形成 LogQL-style fulltext search 存储成本高,全局,高,4,lib/opentelemetry/otlp_writer.go:171-250; engine/index/clv/search.go; engine/index/textindex/; rg 搜索 LogQL/logql 返回空,为日志创建独立 shard 类型+接入/完善现有全文索引查询路径,L,11
+F12,RCA,拓扑存储不可扩展,拓扑数据从外部 HTTP API 获取 全量载入内存处理,1M 边缘(edge)在内存中不可存放; 外部 HTTP 服务故障→拓扑查询全不可用,全局,高,4,engine/executor/graph_transform.go:161-168; lib/util/graph_client.go:86-115,内建持久化图存储引擎+图分片+分层索引,XL,12
+F13,性能,Go GC 日志场景压力,大量 string 字段(日志 body/trace_id) → heap 分配暴涨,"1B logs/s 约 300 GB/s 分配速率 → GC 完全无法处理",全局,高,4,通过 influx.Row 分配模式推断; 无 off-heap 内存管理,引入 off-heap/mmap string 管理+对象池化+GOGC 调优,L,13
+F14,性能+RCA,无端到端超时级联,context.WithTimeout 未从 HTTP 贯穿到 engine scan,大查询无隔离→吃满资源→劫持其他查询,局部→全局,高,3,coordinator/points_writer.go:862(time.Since 自旋); 全仓库搜索 context.WithTimeout 关键路径无,从 HTTP handler 到 engine scan 传递 context.WithTimeout,S,14
+F15,RCA,OTLP Trace 无关联查询,trace_id/span_id 作为普通 field 存储 无 span 关联能力,用户无法按 trace_id 查询完整 trace,局部,高,3,lib/opentelemetry/otel_context.go:58-68; lib/opentelemetry/otlp_writer.go:111-127,实现 span index+TraceQL 风格的查询语法,L,15
+F16,质量,EngineImpl 全无 godoc,60+ exported 方法无文档注释,新开发者上手困难 重构风险高,局部,中,3,engine/engine.go(EngineImpl 无 godoc); 60+ 方法仅少数有注释,补充所有 exported 方法文档注释,S,16
+F17,韧性,无滚动升级/配置热加载,搜索 rolling.upgrade/SIGHUP 无结果,每次升级需全集群停服,全局,中,3,搜索 rolling.upgrade/drain/decommission/SIGHUP 全无结果,实现 staged shutdown+版本兼容检查+graceful drain,L,17
+F18,RCA,RCA 引擎浅 (仅 1 测试),仅 FaultDemarcation 一种算法 无概率排序/多根因/因果推断,"RCA 精确率低, 误报率高",局部,中,3,engine/executor/rca.go:160-288; rca_test.go 仅 1 测试用例,扩展 RCA 算法集合(FaultPropagation+概率排序),M,18
+F19,架构,PromQL 转译有损,promql2influxql 递归转译有类型和函数限制,高级 PromQL 查询不可用,局部,中,3,lib/util/lifted/promql2influxql/transpiler.go:46-58,实现原生 PromQL 执行引擎,XL,19
+F20,韧性,多租户隔离缺失,Limits 结构仅限字段级别校验 无 QPS/存储配额隔离,单租户大量写入影响所有租户,局部,中,3,lib/config/limits.go:25-40,增加 per-tenant QPS 限流+存储配额+查询优先级,L,20
+F21,质量,拓扑模块测试不足,graph.go:18 函数仅 3 测试 + graph_transform.go:12 函数仅 2 测试,拓扑功能生产不可靠,局部,中,2,engine/executor/graph_test.go(仅 3 Test 函数); graph_transform_test.go(仅 2 Test),增加拓扑模块完整单元测试+集成测试,S,21
+F22,韧性,查询无 per-query memory budget,InterruptSqlMemPct=85% 全局触发 无法隔离大/小查询,大查询可能被误杀 小查询可能被大查询劫持,局部,中,2,lib/config/store.go:281-282; engine/executor/processor.go:263-270,引入 per-query memory limit + query queueing + 优先级驱逐,M,22
+F23,韧性,自观测无 Prometheus/OTEL 原生输出,仅 HTTP/文件推送 + Prometheus Desc 仅 42 行,监控集成成本高 告警规则需自行编写,局部,中,2,lib/statisticsPusher/; lib/metrics/base_collector.go:24-28,增加 Prometheus metrics endpoint + OTLP metrics export,S,23
+F24,韧性,无审计日志,搜索 audit/Audit 无结果,无法追溯元数据变更操作 ("谁在何时改了什么"),局部,低,2,搜索 audit/Audit 无结果,实现元数据变更审计日志,M,24
+F25,性能,自带 benchmark 覆盖不足(估计<20%),无 memtable/WAL/compaction/index build benchmark,无法验证性能优化效果,局部,中,2,283 个 Benchmark 函数但存储引擎核心路径缺失,增加 memtable/WAL/compaction/index/全链路 benchmark,S,25

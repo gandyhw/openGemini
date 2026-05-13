@@ -1,0 +1,17 @@
+Goroutines without context cancellation in executor:
+File: engine/executor/limit_transform.go:229 - bare go func()
+File: engine/executor/index_scan_transform.go:487 - bare go func()
+File: engine/executor/merge_transform.go:391 - bare go func()
+File: engine/executor/httpsender_transform.go:1137 - bare go func()
+File: engine/executor/httpsender_transform.go:1326 - bare go func()
+File: engine/executor/cte_transform.go:311 - bare go func()
+File: engine/executor/sparse_index_scan_transform.go:213 - bare go func()
+
+Goroutines in WAL without context:
+File: engine/wal.go:279,514,552,606,613,646 - bare go func()
+
+Goroutines in index building:
+File: engine/index/tsi/mergeset_index.go:124 - go func(index int) { for row := range idx.queues[index] {...} }
+File: engine/index/tsi/mergeset_index.go:151 - go func(index int) { ... }
+
+Total: ~134 `go func(` calls in non-test code, many without context cancellation.

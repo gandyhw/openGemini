@@ -1,0 +1,13 @@
+=== OTLP Data Model Mapping ===
+
+All OTLP data (metrics, traces, logs) -> influx.Row via otel2influx library
+- OTLP Metrics: otlp_writer.go:WriteMetrics (line 129) -> pmetric.UnmarshalProto -> WriteMetrics
+- OTLP Traces: otlp_writer.go:WriteTraces (line 111) -> ptrace.UnmarshalProto -> WriteTraces
+- OTLP Logs: otlp_writer.go:WriteLogs (line 147) -> plog.UnmarshalProto -> WriteLogs
+
+All converted to the same influx.Row struct via EnqueuePoint (line 171)
+All written via same PointsWriter.RetryWritePointRows (line 281)
+
+No separate storage engine for different data types.
+Fulltext index code exists (engine/index/clv/search.go, engine/index/textindex/), but no confirmed automatic wiring from OTLP log/trace string fields to that query path.
+No LogQL support.

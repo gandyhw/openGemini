@@ -1,0 +1,12 @@
+=== Write Path Critical Flow (coordinator/points_writer.go) ===
+
+RetryWritePointRows (line 238) -> writePointRows (line 281) -> routeAndMapOriginRows (line 381) -> writeShardMap (line 335) -> writeRowToShard (line 854)
+
+Key observations:
+- Route by shard key at lines 703-809 (updateShardGroupAndShardKey)
+- Write goroutine per shard at line 353 (go w.writeRowToShard)
+- Timeout only in writeRowToShard loop (line 862: time.Since(start) >= timeout)
+- No context.WithTimeout in the write path
+- Retry happens in RetryWritePointRows with 1s sleep (line 268)
+- Partial failures handled via partialErr pattern, dropped rows counted
+- Stream aggregation processed inline before writing (routeAndCalculateStreamRows, line 587)

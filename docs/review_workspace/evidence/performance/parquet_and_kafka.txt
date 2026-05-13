@@ -1,0 +1,22 @@
+Kafka protocol-compatible server exists but is for data CONSUMPTION (not ingestion buffer):
+File: services/consume/kafka/server.go:36-75
+```
+func (s *Server) Open(addr string, size uint64) error {
+    ...
+    go func() {
+        defer util.MustClose(listener)
+        for {
+            conn, err := listener.Accept()
+            ...
+            go s.Process(conn)
+        }
+    }()
+    return nil
+}
+```
+
+Parquet export task exists:
+File: engine/immutable/task_parquet.go (parquet export task)
+File: engine/immutable/task_cs_parquet.go (column store parquet export task)
+
+No Kafka/Pulsar integration as an ingestion buffer for high-throughput write decoupling.

@@ -1,0 +1,19 @@
+FilterTransform iterates row-by-row, not vectorized:
+File: engine/executor/filter_transform.go:154-189
+```
+func (trans *FilterTransform) filterHelper(c Chunk) {
+    ...
+    for i := 0; i < c.NumberOfRows(); i++ {
+        ...
+        for j, f := range trans.Output.RowDataType.Fields() {
+            trans.filterMap[f.Expr.(*influxql.VarRef).Val] = trans.valueFunc[j](i, c.Column(j))
+        }
+        ...
+        if valuer.EvalBool(trans.opt.Condition) {
+            ...
+        }
+    }
+}
+```
+This is a row-by-row loop with per-row expression evaluation via ValuerEval.
+No SIMD vectorization is used - each row and each column is evaluated individually.

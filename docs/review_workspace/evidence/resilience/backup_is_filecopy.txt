@@ -1,0 +1,32 @@
+File: lib/backup/backup.go:47-107
+
+func FileCopy(src, dst string) error {
+    // ... os.Stat, os.MkdirAll, then fileops.CopyFile
+}
+
+func FolderCopy(src, dst string) error {
+    // ... recursive directory copy
+}
+
+File: lib/backup/backuplog.go:19-37
+// Tracks file lists in JSON:
+type BackupLogInfo struct {
+    FullBackupTime int64
+    IncBackupTime  int64
+    FileListMap    map[string][][]string
+}
+type IncBackupLogInfo struct {
+    AddFileListMap map[string][][]string
+    DelFileListMap map[string][][]string
+}
+
+File: app/ts-recover/recover/recover.go:34-35
+const FullAndIncRecoverMode = "1"
+const FullRecoverMode = "2"
+// BackupRecover supports full and full+incremental restore
+// But NO backup scheduler, NO automatic backup, NO cross-node consistency
+
+Impact: RPO = dependent on manual operation. RTO = time to copy all TSSP files.
+No consistent snapshot across nodes. No incremental backup deltas.
+Full backup of 100M entities would take hours and require significant
+disk space.
