@@ -20,7 +20,7 @@
 | I-7 | **新增核心 benchmark** | `engine/mutable/`, `engine/wal.go`, `engine/index/tsi/` | Go 1.24 toolchain | memtable/WAL/index build 吞吐量 benchmark 就绪；基线数据可查 | 2-3 人周 |
 | I-8 | **Per-query memory budget** | `engine/executor/processor.go` | I-4 | 替换全局 85% 内存阈值；支持 per-query 内存上限配置；大查询被杀时不误杀小查询 | 2-3 人周 |
 
-**阶段验收**: 5 个致命风险 (F1/F2/F3/F4/F7) 全部关闭；单节点 benchmark 数据就绪；可对外暴露 Prometheus 指标。
+**阶段验收**: Phase I 覆盖风险 (F1/F2/F3/F10/F14/F22/F23/F25) 全部关闭；F4 写入反压与 F7 compaction 写放大保留到 Phase II 验收；单节点 benchmark 数据就绪；可对外暴露 Prometheus 指标。
 
 ---
 
@@ -31,7 +31,7 @@
 | # | 条目 | 涉及模块 | 依赖 | 验收标准 | 预估人力 |
 |---|------|---------|------|---------|---------|
 | II-1 | **Ingestion Gateway POC** | 新建 `app/ts-ingest/` | I-4 | 独立网关进程接受 Line Protocol/OTLP；Kafka consumer connector；5 节点集群压测 10M metrics/s | 4-6 人月 |
-| II-2 | **日志专用存储路径** | `engine/` 新增 log shard type | I-7 | 日志数据物理隔离 metrics；内置 CLV 全文索引；日志查询支持 keyword/正则/全文 3 种模式 | 4-6 人月 |
+| II-2 | **日志专用存储路径** | `engine/` 新增 log shard type | I-7 | 日志数据物理隔离 metrics；接入/完善现有 CLV/textindex；日志查询支持 keyword/正则/全文 3 种模式 | 4-6 人月 |
 | II-3 | **日志压缩优化** | `lib/compress/`, `engine/immutable/` | II-2 | 字典压缩 + delta encoding for string；日志压缩比 2-4x → 5-8x；混合日志压测验证 | 2-3 人月 |
 | II-4 | **自动备份调度** | `services/backup/` (新建) | 无 | cron 表达式调度；全量/增量自动切换；定期恢复演练；恢复后一致性校验 | 2-3 人月 |
 | II-5 | **写入 admission control** | `coordinator/points_writer.go` | I-4 | Token bucket rate limiter；有界写入缓冲队列；backpressure signal 向 HTTP handler 传播 | 2-3 人月 |
@@ -73,7 +73,7 @@
 
 | 阶段 | 时长 | 核心工程师 | 主要产出 |
 |------|------|-----------|---------|
-| Phase I | 0–3 月 | 3-4 人 | 消除致命风险, benchmark 基线 |
+| Phase I | 0–3 月 | 3-4 人 | 关闭首批韧性风险, benchmark 基线 |
 | Phase II | 3–6 月 | 5-7 人 | 日志可用, 备份自动化, 查询优化 |
 | Phase III | 6–12 月 | 8-12 人 | 元数据扩展, 跨模 RCA, 目标规模 |
 

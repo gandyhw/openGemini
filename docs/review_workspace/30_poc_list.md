@@ -105,12 +105,12 @@
 **验证方法**:
 1. 构建 1M 边 + 100K 节点的合成拓扑图
 2. 测试外部 HTTP 模式下: 数据拉取延迟、内存峰值、k-hop BFS 延迟 (hops=1,2,3,5)
-3. 对比: 同一拓扑数据存入 openGemini 本地 (作为 measurement)，用 GraphStatement 查询的性能
+3. 对比: 为 POC 增加本地拓扑读取原型（如替换/扩展 `GraphTransform` 的数据源接口，从本地持久化 edge store 或 measurement reader 读取边），再用 `GraphStatement` 驱动同一 k-hop 过滤；仅把 edge 写成 measurement 不能覆盖当前 `GraphTransform.Work()` 路径
 4. 测试 100 并发查询时的 QPS
 
 **通过条件**: 
 - 外部 HTTP 模式能否承载 1M 边 (可能直接 OOM)
-- 本地存储模式 vs 外部 API 模式性能对比
+- 本地拓扑读取原型 vs 外部 API 模式性能对比
 - 确认 ≥85% 需要内建图引擎
 
 **预估耗时**: 7-10 天

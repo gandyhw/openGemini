@@ -31,7 +31,7 @@
 - WAL sync 策略可配（同步/异步模式）
 - 磁盘水印保护 — 写入前检查剩余空间
 - 端到端 context 超时传播链
-- **收益**: 消除 4 个致命风险（F1/F4/F5/F7），成本极低
+- **收益**: 降低 F1/F2/F3/F14 四项高优先级韧性风险，成本较低
 
 ### 2. 写入解耦：引入 Ingestion Gateway（成本 L，3-6 月）
 
@@ -44,13 +44,13 @@
 
 - 将 Topology 数据从外部 HTTP 服务迁移到 openGemini 本地图存储引擎
 - 实现 metric/log/trace/topo 的跨模 join 算子（HashJoin/MergeJoin）
-- 引入全文检索索引（替代当前无 LogQL 的窘境）
+- 打通 LogQL/body 全文查询路径（复用或完善现有全文索引代码）
 - **收益**: 生产 RCA 关联下钻链路闭环（告警→trace→日志→拓扑影响面）
 
 ### 4. 存储引擎分层：日志专用存储路径（成本 L，3-6 月）
 
 - 为日志数据创建独立 shard 类型（与 metrics 物理隔离）
-- 内置全文索引 + 专用日志压缩（字典压缩 / delta encoding for string）
+- 接入/完善现有全文索引 + 专用日志压缩（字典压缩 / delta encoding for string）
 - 复用列存架构但针对日志高基数/长字符串场景优化
 - **收益**: 日志压缩比 2-4x → 5-8x，查询延迟显著降低
 

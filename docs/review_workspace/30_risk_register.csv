@@ -9,7 +9,7 @@ F7,性能,LSM Compaction 写放大 10-18x,7 级 compaction L0→L1 每轮出现 
 F8,韧性,备份一致性缺失,仅有文件级拷贝 无跨节点快照 无备份调度器,RPO=天级 RTO=小时级 恢复后数据一致性无保证,全局,高,4,lib/backup/backup.go:47-107; app/ts-recover/recover/recover.go:51-72,实现集群级一致性快照 + 自动备份调度 + 定期恢复演练,M,8
 F9,性能,零 SIMD/向量化执行,全标量执行 无 SIMD 指令 算子内部逐行循环 for i:=0; i<rows; i++,查询延迟高 (filter/agg 有 3-6x 优化空间),全局,高,4,engine/executor/filter_transform.go:154-189; 全仓库搜索 SIMD/avx/sse 无结果,实现关键算子(Filter/Aggregate)的 SIMD 向量化,L,9
 F10,质量,FSM panic 滥用 (596 处全仓库),Raft 状态机中 proto 解析失败也 panic,ts-meta 进程崩溃→全集群写入不可用,全局,中,4,app/ts-meta/meta/store_fsm.go:50-52; store.go 中 20 处 proto panic,FSM panic 全部改为 error return + 日志告警,M,10
-F11,质量+RCA,日志全链路薄弱,无 LogQL/全文检索; 压缩比仅 2-4x; 与 metrics 混存,日志查询延迟高 无法做 fulltext search 存储成本高,全局,高,4,lib/opentelemetry/otlp_writer.go:171-250; rg 搜索 fulltext/LogQL 返回空,为日志创建独立 shard 类型+内置全文索引,L,11
+F11,质量+RCA,日志全链路薄弱,无 LogQL; 全文索引代码存在但未确认接入 OTLP log body 查询; 压缩比仅 2-4x; 与 metrics 混存,日志查询延迟高 无法形成 LogQL-style fulltext search 存储成本高,全局,高,4,lib/opentelemetry/otlp_writer.go:171-250; engine/index/clv/search.go; engine/index/textindex/; rg 搜索 LogQL/logql 返回空,为日志创建独立 shard 类型+接入/完善现有全文索引查询路径,L,11
 F12,RCA,拓扑存储不可扩展,拓扑数据从外部 HTTP API 获取 全量载入内存处理,1M 边缘(edge)在内存中不可存放; 外部 HTTP 服务故障→拓扑查询全不可用,全局,高,4,engine/executor/graph_transform.go:161-168; lib/util/graph_client.go:86-115,内建持久化图存储引擎+图分片+分层索引,XL,12
 F13,性能,Go GC 日志场景压力,大量 string 字段(日志 body/trace_id) → heap 分配暴涨,"1B logs/s 约 300 GB/s 分配速率 → GC 完全无法处理",全局,高,4,通过 influx.Row 分配模式推断; 无 off-heap 内存管理,引入 off-heap/mmap string 管理+对象池化+GOGC 调优,L,13
 F14,性能+RCA,无端到端超时级联,context.WithTimeout 未从 HTTP 贯穿到 engine scan,大查询无隔离→吃满资源→劫持其他查询,局部→全局,高,3,coordinator/points_writer.go:862(time.Since 自旋); 全仓库搜索 context.WithTimeout 关键路径无,从 HTTP handler 到 engine scan 传递 context.WithTimeout,S,14

@@ -34,10 +34,10 @@
 - **合并**: 生产 RCA 的核心"关联下钻"链路（告警 → trace → 日志 → 拓扑影响面）无法闭环。
 
 ### D5. 日志全功能缺失
-- A: 无 LogQL/全文搜索
+- A: 无 LogQL；全文索引代码存在，但未确认接入 OTLP log body 查询路径
 - B: 压缩比仅 2-4x，无专用日志压缩
 - C: trace body 以 string field 存储，无独立存储引擎
-- **合并**: 日志从摄入(OTLP)→存储(共享 influx.Row)→查询(无全文检索)→压缩(Snappy 2-4x) 全链路薄弱。
+- **合并**: 日志从摄入(OTLP)→存储(共享 influx.Row)→查询(LogQL/body 全文查询未打通)→压缩(Snappy 2-4x) 全链路薄弱。
 
 ### D6. 拓扑外挂不可靠
 - A: 风险 #5 — 依赖外部 TopoManager HTTP 服务
@@ -174,7 +174,7 @@ if !rds.syncTaskCount.CompareAndSwap(0, 1) {
 2. ts-store 使用 etcd/raft v3 per-PT — A/D 确认
 3. OTLP → influx.Row 统一转换 — A/C/B 确认
 4. 列存和行存共享同一 Shard 抽象 — A/B/C 确认
-5. 无 LogQL/全文搜索查询语言 — A/C 确认（rg 搜索返回空）
+5. 无 LogQL/body 全文搜索查询语言；已有全文索引代码但未确认接入日志查询路径 — A/C 确认
 6. 无 SIMD/向量化执行 — B 确认（全仓库搜索无结果）
 
 **单一 agent 发现但未与其他矛盾**:

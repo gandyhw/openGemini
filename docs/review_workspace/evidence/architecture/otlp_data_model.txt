@@ -9,5 +9,5 @@ All converted to the same influx.Row struct via EnqueuePoint (line 171)
 All written via same PointsWriter.RetryWritePointRows (line 281)
 
 No separate storage engine for different data types.
-No fulltext index on log/trace string fields.
+Fulltext index code exists (engine/index/clv/search.go, engine/index/textindex/), but no confirmed automatic wiring from OTLP log/trace string fields to that query path.
 No LogQL support.

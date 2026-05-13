@@ -142,11 +142,11 @@ Metrics、Logs、Traces 全部以 `influx.Row` 格式存储在同一个 storage 
 - 使用同一 `PointsWriter.RetryWritePointRows()` 写入路径
 - 所有数据共享同一个 TSI 索引、同一个 shard 分配策略
 
-**无差异化存储引擎**: 日志和 trace 的高基数字段(如 `span_id`, `trace_id`, `service.name`, `body`)与传统时序指标的数值型 field 高度混合。Logs 的 `body` 字段以 string field 存储，无全文索引支持。
+**无差异化存储引擎**: 日志和 trace 的高基数字段(如 `span_id`, `trace_id`, `service.name`, `body`)与传统时序指标的数值型 field 高度混合。Logs 的 `body` 字段以 string field 存储，尚未确认接入现有全文索引查询路径。
 
-**无 LogQL/全文搜索支持**: 搜索 `rg "fulltext|text.*search|LogQL|search.*query" --type=go` 返回空。Logs 只能通过 `=`, `!=`, `=~` (正则)在查询层过滤，无法做全文检索。
+**缺失 LogQL 与日志 body 全文查询接入**: 代码中已存在全文索引相关实现 (`engine/index/clv/search.go`, `engine/index/textindex/`)，但未发现 OTLP log body 自动写入/查询该索引的路径，也未发现 LogQL 解析或转换层。当前 Logs 查询主要依赖 InfluxQL 的 `=`, `!=`, `=~` (正则)过滤，无法形成 LogQL-style 的日志全文检索体验。
 
-**证据**: `lib/opentelemetry/otlp_writer.go:171-250`, `lib/opentelemetry/otlp_writer.go:277-282`, `lib/util/lifted/influx/httpd/handler_otlp.go:104-170`
+**证据**: `lib/opentelemetry/otlp_writer.go:171-250`, `lib/opentelemetry/otlp_writer.go:277-282`, `lib/util/lifted/influx/httpd/handler_otlp.go:104-170`, `engine/index/clv/search.go`, `engine/index/textindex/`
 
 ### 5.2 拓扑(Topology) 查询
 
@@ -171,7 +171,7 @@ Topology 是一个"外挂"能力：
 | ts-meta 单 Raft 组成为写入瓶颈 | 全局 | 高 | app/ts-meta/meta/store.go:381-396; store_fsm.go:33-75 (ApplyBatch 持有双重锁) |
 | 元数据内存无上限导致 OOM | 单点->全局 | 中 | app/ts-meta/meta/store.go:856-862 (GetData 直接返回引用, 无内存上限) |
 | 缓存 100ms 同步延迟致路由不一致 | 局部 | 中 | app/ts-meta/meta/store.go:70 (updateCacheInterval=100ms), store.go:980-998 (serveSnapshot 轮询) |
-| 多模数据共享引擎致日志查询低效 | 全局 | 高 | lib/opentelemetry/otlp_writer.go:171-250 (统一 influx.Row); 无全文索引支持 |
+| 多模数据共享引擎致日志查询低效 | 全局 | 高 | lib/opentelemetry/otlp_writer.go:171-250 (统一 influx.Row); 已有全文索引代码但缺少 OTLP log body 查询接入 |
 | 拓扑查询依赖外部 HTTP 服务停机 | 全局 | 高 | engine/executor/graph_transform.go:161-168; lib/util/graph_client.go:86-115 |
 | 无 ingestion gateway 致写入抖动时雪崩 | 全局 | 高 | coordinator/points_writer.go:238-333 (无端到端背压/限流机制) |
 | ShardKey 高基数致 shard 爆炸 | 局部 | 中 | coordinator/shard_mapper.go:144-194 (按时间片全量查 shard) |
@@ -190,7 +190,7 @@ Topology 是一个"外挂"能力：
 | ts-meta 单 Raft 组管所有元数据 | 100K 实体下写入串行化、内存膨胀 | 拆分拓扑层 vs. 数据字典元数据 Raft 组; 引入多组 Hashicorp Raft; 或迁移至 etcd/Consul | XL | 消除元数据瓶颈, 支撑 10 万+ 实体 |
 | ts-sql 承载所有网关+协调功能 | 职责混杂, 1e8/s 写入下 CPU/内存爆炸 | 拆分独立 ingestion gateway (仅协议转换+行缓冲), 独立 query coordinator (仅 shard 路由+计划生成) | XL | 水平扩展写入/查询, 独立背压 |
 | 元数据缓存 100ms 轮询 | 路由延迟, 写入冲突 | 改为 push-based gossip 或 etcd watch; 10s 全量推送改为增量 diff | M | 减少元数据不一致窗口 |
-| 所有数据共享存储 | 日志全文搜索缺失 | 内置倒排文本索引(如 tantivy/bluge)支持 body 字段搜索; 为日志创建独立 shard 类型 | L | 支撑日志查询场景 |
+| 所有数据共享存储 | 日志 body 未接入全文查询, 且无 LogQL | 复用/完善已有 CLV/textindex, 接入 body 字段索引与查询路径; 为日志创建独立 shard 类型 | L | 支撑日志查询场景 |
 | 拓扑依赖外部 HTTP 服务 | 拓扑数据不可在系统内关联 | 在 openGemini 内建拓扑图存储引擎, 支持 GraphStatement 直接查询本地存储 | XL | 生产 RCA 秒级跨模下钻 |
 | 无端到端超时级联 | 一个慢查询击穿存储节点 | 从 HTTP handler 到 engine scan 传递 context.WithTimeout | S | 防止慢查询扩散 |
 | PromQL 转译执行 | 有损转换 | 实现原生 PromQL 执行引擎(直接理解 promql/parser AST) | XL | 完全 PromQL 兼容 |
@@ -202,7 +202,7 @@ Topology 是一个"外挂"能力：
 
 1. **最根本风险**: ts-meta 的单一 Raft 组 + 全内存的状态机模型在 10 万实体目标下会成为瓶颈。单个 `meta.Data` 对象包含全部集群元数据, FSM `ApplyBatch` 持有 `mu+cacheMu` 双锁 (store_fsm.go:36-40), 不可通过加节点水平扩展。
 
-2. **最大缺口**: 跨模关联查询能力缺失。Topology 数据在外部、Logs 无全文索引、Traces 展开到扁平行, 无法在系统内完成 metrics -> traces -> logs -> topology 的关联下钻。生产 RCA 需要此能力。
+2. **最大缺口**: 跨模关联查询能力缺失。Topology 数据在外部、Logs 缺少 LogQL/body 全文查询接入、Traces 展开到扁平行, 无法在系统内完成 metrics -> traces -> logs -> topology 的关联下钻。生产 RCA 需要此能力。
 
 3. **最大收益/成本比**: 独立的 ingestion gateway (拆分 ts-sql 职责)和端到端超时级联是两个成本相对低但收益显著的改进。
 

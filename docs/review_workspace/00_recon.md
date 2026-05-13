@@ -86,11 +86,11 @@ HTTP /api/v2/otlp
 | **Metrics** | ✅ 生产可用 | influx line protocol, PromQL via `promql2influxql` transpiler (`lib/util/lifted/promql2influxql/transpiler.go`) |
 | **Logs** | ⚠️ 部分支持 | OTLP logs 摄入存在 (`lib/opentelemetry/otlp_writer.go:53`); 全文索引存在 (`engine/index/clv/search.go`, `engine/index/textindex/`); **缺失 LogQL 查询语言** (rg 搜索 LogQL/logql 返回空) |
 | **Trace** | ⚠️ 部分支持 | OTLP traces 摄入存在 (`lib/opentelemetry/otlp_writer.go:42`), span 追踪在 executor 中 (`lib/tracing/`); **缺失 trace 专用查询语法和 span 关联分析** |
-| **Topology/Graph** | ⚠️ Alpha | `GraphStatement` AST 存在 (`lib/util/lifted/influx/influxql/ast.go:12282`), 支持 HopNum + 节点/边条件过滤; `GraphTransform` executor 存在 (`engine/executor/graph_transform.go:34`); **缺失 k-hop 遍历、最短路径、影响面分析算法** (rg 搜索 k-hop/shortest-path/graph-traversal 返回空) |
+| **Topology/Graph** | ⚠️ Alpha | `GraphStatement` AST 存在 (`lib/util/lifted/influx/influxql/ast.go:12282`), 支持 HopNum + 节点/边条件过滤; `GraphTransform` executor 存在 (`engine/executor/graph_transform.go:34`), 但数据源来自外部 TopoManager HTTP 或 mock 数据; **缺失索引化图遍历、最短路径、影响面分析算法** (rg 搜索 shortest-path/graph-traversal 返回空) |
 
 ### 关键确认
 
-- **1M 拓扑边当前承载方式**: `GraphStatement` 通过 HopNum + NodeCondition/EdgeCondition 表达式进行类图遍历查询,底层存储仍走 influx row 模型。**不存在独立图存储引擎或图索引结构。**
+- **1M 拓扑边当前承载方式**: `GraphStatement` 通过 HopNum + NodeCondition/EdgeCondition 表达式驱动 `GraphTransform`, 但 `GraphTransform.Work()` 从外部 TopoManager HTTP 拉取拓扑数据(无 URL 时使用 mock 数据), 不查询本地 measurement。**不存在独立图存储引擎或图索引结构。**
 - **跨模查询**: OTLP 通过 `otel2influx` 将所有 telemetry 统一转为 influx.Row 写入同一存储引擎。跨模关联查询无原生支持——需要应用层手工 join。
 - **AI4DB**: rg 搜索 `anomaly|forecast|ai4db|predict` 返回空,不存在的功能。
 
