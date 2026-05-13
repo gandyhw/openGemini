@@ -1,0 +1,20 @@
+File: engine/fence.go:20-33 (non-streamfs build tag)
+
+type localFencer struct {
+}
+
+func (localFencer) Fence() error {
+    return nil  // <-- NO-OP! Does nothing
+}
+
+func (localFencer) ReleaseFence() error {
+    return nil
+}
+
+func newFencer(dataPath, walPath, db string, pt uint32) fencer {
+    return &localFencer{}
+}
+
+Impact: When NOT using streamfs build tag (the default build), the split-brain
+fence is a complete no-op. In the event of network partition with the data
+replication Raft, a stale leader could continue writing to local storage.

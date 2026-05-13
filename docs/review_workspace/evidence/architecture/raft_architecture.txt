@@ -1,0 +1,19 @@
+=== Raft Architecture Overview ===
+
+1. ts-meta (meta Raft): Hashicorp Raft
+   - Single Raft group for all cluster metadata
+   - raft_wrapper.go:73: raft.NewRaft(raftConf, (*storeFSM)(s), ...)
+   - store_fsm.go: 60+ command types (line 112-178)
+   - FSM.Apply (store_fsm.go:77): applies command to meta.Data, closes dataChanged channel
+   - FSM.ApplyBatch (store_fsm.go:33): batch apply for performance
+   - Single leader bottleneck at meta layer
+
+2. ts-store (data Raft): etcd Raft v3
+   - Per-PT Raft group for data replication
+   - raftconn/node.go:251: raft.RestartNode or raft.StartNode
+   - RaftNode.proposals() (line 393): proposes data via node.Propose()
+   - RaftNode.serveChannels() (line 317): main event loop handling Ready()
+   - PublishEntries (line 468): pushes committed entries to commitC channel
+   - dataCommittedC (line 100-101): per-proposeId completion tracking for backpressure
+   - Config: MaxInflightMsgs=256, tickInterval=400ms (node.go:41-43)
+   - Clear entry log periodically (node.go:731) based on follower matching index

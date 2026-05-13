@@ -1,0 +1,48 @@
+PointsWriter per-row processing overhead:
+File: coordinator/points_writer.go:324-390 (routeAndMapOriginRows)
+```
+for i := 0; i < len(rows); i++ {
+    r = &rows[i]
+    // per-row: check time range
+    // per-row: sort fields
+    // per-row: fix fields (dedup, type check)
+    // per-row: create measurement (if new)
+    // per-row: update schema if needed
+    // per-row: update shard group and shard key
+    ...
+}
+```
+
+writeShardMap fans out writes to shards via goroutines:
+File: coordinator/points_writer.go:343-360
+```
+func (w *PointsWriter) writeShardMap(...) error {
+    ...
+    wg.Add(shardRowMap.Len())
+    for i := range shardRowMap {
+        ...
+        go func(wCtx *netstorage.WriteContext) {
+            innerErr := w.writeRowToShard(wCtx, database, retentionPolicy)
+            ...
+        }(writeCtx)
+    }
+    wg.Wait()
+    ...
+}
+```
+
+writeRowToShard calls TSDBStore.WriteRows with retry:
+File: coordinator/points_writer.go:854-898
+```
+func (w *PointsWriter) writeRowToShard(ctx *netstorage.WriteContext, ...) error {
+    ...
+    for _, ptId := range ctx.Shard.Owners {
+        err = w.TSDBStore.WriteRows(ctx, ptView[ptId].Owner.NodeID, ptId, ...)
+        if err != nil && errno.IsRetryErrorForPtView(err) {
+            time.Sleep(100 * time.Millisecond)
+            goto RETRY
+        }
+    }
+    ...
+}
+```

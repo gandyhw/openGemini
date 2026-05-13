@@ -1,0 +1,12 @@
+=== Meta Store Cache Sync Strategy (store.go) ===
+
+- updateCacheInterval = 100ms (line 70): Periodic cache refresh timer
+- pushInterval = 10s (line 72): Full data push interval
+- serveSnapshot (line 980): Listens on dataChanged channel + periodic check
+  - When data changes FSM applies commands, it closes s.dataChanged channel
+  - At 100ms intervals, if index() > cacheIndex(), does updateCacheData
+- updateCacheData (line 927): Full marshal+unmarshal of meta.Data to cacheData
+- UpdateCacheDataV2 (line 945): For inc-sync mode, just copies pointer
+- cacheDataBytes and cacheData used by ts-sql via metaclient
+
+Risk: 100ms pull-based sync means ts-sql nodes may see stale metadata for up to 100ms.

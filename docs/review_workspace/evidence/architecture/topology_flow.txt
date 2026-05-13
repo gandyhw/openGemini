@@ -1,0 +1,14 @@
+=== Topology Query Flow ===
+
+1. SQL layer parses GraphStatement (ast.go:12282)
+2. executeGraphStatement (statement_executor.go:2824) creates GraphTransform
+3. GraphTransform.Work (graph_transform.go:137):
+   a. Sends HTTP GET to external TopoManager (util/graph_client.go:86):
+      url = config.TopoManagerUrl + ?startTime=&endTime=&applicationId=
+   b. Gets response string, parses into Graph
+   c. Graph.MultiHopFilter applies hop/condition filtering
+   d. Returns subGraph as chunk output
+
+Critical: Topology data is NOT in openGemini. It requires an external TopoManager HTTP service.
+The TopoManager URL is configured via SetTopoManagerUrl (graph_client.go:41) from ts-sql config (sql/server.go:205).
+Token auth is hardcoded as empty string (graph_client.go:93).

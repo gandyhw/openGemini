@@ -1,0 +1,25 @@
+Search: rg "ENOSPC|disk.full|no.space|DiskFull|disk.*full" across entire codebase
+Result: No matches found.
+
+Search: rg "MemUsage" in engine/
+Result: IsMemUsageExceeded() at engine/sysctrl.go:307-316
+
+File: engine/sysctrl.go:307-316
+func IsMemUsageExceeded() bool {
+    memLimitPct := GetMemUsageLimit()
+    if memLimitPct < 1 || memLimitPct >= 100 {
+        return false
+    }
+    memUsedPct := memory.GetMemMonitor().MemUsedPct()
+    exceeded := memUsedPct > float64(memLimitPct)
+    return exceeded
+}
+
+File: engine/immutable/compact.go:46-47
+maxFullCompactor = cpu.GetCpuNum() / 2
+maxCompactor = cpu.GetCpuNum()
+
+Impact: Memory protection exists via InterruptQuery + IsMemUsageExceeded.
+However, there is NO disk-full protection anywhere in the codebase.
+A disk-full event will cause silent write failures and potentially corrupt
+open WAL/compaction files.

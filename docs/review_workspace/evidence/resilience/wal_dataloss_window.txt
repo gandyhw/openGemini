@@ -1,0 +1,31 @@
+File: lib/raftlog/storage.go:332-368
+
+func (rds *RaftDiskStorage) TrySync() error {
+    if rds.SyncInterval == 0 || rds.firstSync {
+        // ... immediate sync for first write
+        return nil
+    }
+    if !rds.syncTaskCount.CompareAndSwap(0, 1) {
+        return nil  // <-- If a sync is already in progress, silently skip!
+    }
+    go func() {
+        rds.backSync()  // <-- Async goroutine
+    }()
+    return nil
+}
+
+func (rds *RaftDiskStorage) backSync() {
+    time.Sleep(rds.SyncInterval)  // <-- Sleeps for SyncInterval (default 100ms) before sync
+    // ... TrySync on meta and entry files
+}
+
+File: lib/config/raft_storage.go:24
+DefaultRaftEntrySyncInterval = 100 * time.Millisecond
+
+File: lib/config/wal.go:24
+DefaultWALSyncInterval = 100 * time.Millisecond
+
+Impact: WAL writes are acknowledged to application before being fsynced.
+Crash between write and fsync = up to 100ms of lost data (plus the in-flight
+writes that skipped sync due to syncTaskCount CAS). At 1B logs/s, this is
+~100M log lines lost per crash.

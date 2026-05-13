@@ -1,0 +1,35 @@
+Compaction configuration:
+File: engine/immutable/compact.go:31-39
+```
+const (
+    CompactLevels    = 7
+    minFileSizeLimit = 1 * 1024 * 1024
+)
+
+var (
+    LevelCompactRule      = []uint16{0, 1, 0, 2, 0, 3, 0, 1, 2, 3, 0, 4, 0, 5, 0, 1, 2, 6}
+    LevelCompactRuleForCs = []uint16{0, 1, 0, 1, 0, 1}
+    LeveLMinGroupFiles    = [CompactLevels]int{8, 4, 4, 4, 4, 4, 2}
+)
+```
+
+LevelPlan triggers compaction per measurement:
+File: engine/immutable/ts_mms_tables.go:153-168
+```
+func (t *tsImmTableImpl) LevelPlan(m *MmsTables, level uint16) []*CompactGroup {
+    if !m.CompactionEnabled() {
+        return nil
+    }
+    var plans []*CompactGroup
+    minGroupFileN := LeveLMinGroupFiles[level]
+    m.mu.RLock()
+    for k, v := range m.Order {
+        if m.isClosed() || m.isCompMergeStopped() {
+            break
+        }
+        plans = m.getMmsPlan(k, v, level, minGroupFileN, plans)
+    }
+    m.mu.RUnlock()
+    return plans
+}
+```

@@ -1,0 +1,25 @@
+WAL write is synchronous with memtable write:
+File: engine/shard.go:685-711
+```
+func (s *shard) writeRows(mw *mstWriteCtx, binaryRows []byte, curSize int64) error {
+    ...
+    // write data to mem table
+    err := s.activeTbl.MTable.WriteRows(s.activeTbl, mmPoints, ctx)
+    ...
+    if err = s.wal.Write(binaryRows, WriteWalLineProtocol, mw.maxTime); err != nil {
+        ...
+    }
+    return nil
+}
+```
+
+Snappy compression on WAL records:
+File: engine/wal.go:216-227
+```
+    // prepare for compress memory
+    ...
+    maxEncodeLen := snappy.MaxEncodedLen(len(walRecord.binary))
+    ...
+    // compress data
+    compData := snappy.Encode(compBuf[WalRecordHeadSize:], walRecord.binary)
+```

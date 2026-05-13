@@ -1,0 +1,20 @@
+File: app/ts-meta/meta/store_fsm.go:33-41
+
+func (fsm *storeFSM) ApplyBatch(logs []*raft.Log) []interface{} {
+    s := (*Store)(fsm)
+    var dataChanged bool
+    s.mu.Lock()        // <-- single mutex for ALL FSM apply operations
+    defer s.mu.Unlock()
+    if fsm.UseIncSyncData {
+        s.cacheMu.Lock()
+        defer s.cacheMu.Unlock()
+    }
+    ret := make([]interface{}, len(logs))
+    for i := range logs {
+        // ... process each log entry sequentially under the lock
+    }
+    // ...
+
+Impact: All metadata operations (create/drop database, RP, shard group, user) are serialized
+through a single mutex. At 100K entities with high-churn metadata operations, this becomes
+a bottleneck.
