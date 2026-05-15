@@ -743,3 +743,639 @@ func generateGraphData(nodeNum int, edgesPerNode int) Response {
 	}
 	return data
 }
+
+func TestNewGraph(t *testing.T) {
+	graph := NewGraph()
+	if graph.Nodes == nil {
+		t.Error("NewGraph should initialize Nodes map")
+	}
+	if graph.Edges == nil {
+		t.Error("NewGraph should initialize Edges map")
+	}
+}
+
+func TestGetNodeInfo(t *testing.T) {
+	graph := NewGraph()
+	node := GraphNode{
+		Uid: "node1",
+		MetaData: NodeMetaData{
+			Kind:   "Pod",
+			Region: "cn-north-1",
+			Tags:   map[string]string{"key1": "val1"},
+		},
+	}
+	graph.Nodes["node1"] = node
+
+	result := graph.GetNodeInfo("node1")
+	if result == nil {
+		t.Fatal("GetNodeInfo should return node for existing id")
+	}
+	if result.Uid != "node1" {
+		t.Errorf("expected uid node1, got %s", result.Uid)
+	}
+	if result.MetaData.Kind != "Pod" {
+		t.Errorf("expected Kind Pod, got %s", result.MetaData.Kind)
+	}
+
+	result = graph.GetNodeInfo("nonexistent")
+	if result != nil {
+		t.Error("GetNodeInfo should return nil for non-existing id")
+	}
+}
+
+func TestGetEdgeInfo(t *testing.T) {
+	graph := NewGraph()
+	edge := GraphEdge{
+		Uid: "edge1",
+		MetaData: EdgeMetaData{
+			Kind:      "LOCATE",
+			SourceUid: "src1",
+			TargetUid: "tgt1",
+		},
+	}
+	graph.Edges["edge1"] = edge
+
+	result := graph.GetEdgeInfo("edge1")
+	if result == nil {
+		t.Fatal("GetEdgeInfo should return edge for existing id")
+	}
+	if result.Uid != "edge1" {
+		t.Errorf("expected uid edge1, got %s", result.Uid)
+	}
+
+	result = graph.GetEdgeInfo("nonexistent")
+	if result != nil {
+		t.Error("GetEdgeInfo should return nil for non-existing id")
+	}
+}
+
+func TestBatchInsertNodes(t *testing.T) {
+	graph := NewGraph()
+	graphData := GraphData{
+		Graph: TopoInfo{
+			Vertex: []GraphNode{
+				{Uid: "n1", MetaData: NodeMetaData{Kind: "Node"}},
+				{Uid: "n2", MetaData: NodeMetaData{Kind: "Pod"}},
+			},
+		},
+	}
+
+	result := graph.BatchInsertNodes(graphData)
+	if !result {
+		t.Error("BatchInsertNodes should return true")
+	}
+	if len(graph.Nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(graph.Nodes))
+	}
+	if _, ok := graph.Nodes["n1"]; !ok {
+		t.Error("node n1 should exist after BatchInsertNodes")
+	}
+}
+
+func TestBatchInsertEdges(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["src1"] = GraphNode{Uid: "src1", MetaData: NodeMetaData{Kind: "Node"}}
+	graph.Nodes["tgt1"] = GraphNode{Uid: "tgt1", MetaData: NodeMetaData{Kind: "Pod"}}
+
+	graphData := GraphData{
+		Graph: TopoInfo{
+			Edges: []GraphEdge{
+				{
+					Uid: "e1",
+					MetaData: EdgeMetaData{
+						Kind:      "LOCATE",
+						SourceUid: "src1",
+						TargetUid: "tgt1",
+					},
+				},
+			},
+		},
+	}
+
+	ok, err := graph.BatchInsertEdges(graphData)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Error("BatchInsertEdges should return true on success")
+	}
+
+	if _, exists := graph.Edges["e1"]; !exists {
+		t.Error("edge e1 should exist after BatchInsertEdges")
+	}
+
+	srcNode := graph.Nodes["src1"]
+	if len(srcNode.OutEdges) != 1 || srcNode.OutEdges[0] != "e1" {
+		t.Errorf("source node OutEdges should contain e1, got %v", srcNode.OutEdges)
+	}
+	tgtNode := graph.Nodes["tgt1"]
+	if len(tgtNode.InEdges) != 1 || tgtNode.InEdges[0] != "e1" {
+		t.Errorf("target node InEdges should contain e1, got %v", tgtNode.InEdges)
+	}
+}
+
+func TestBatchInsertEdgesMissingNode(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["src1"] = GraphNode{Uid: "src1"}
+
+	graphData := GraphData{
+		Graph: TopoInfo{
+			Edges: []GraphEdge{
+				{
+					Uid: "e1",
+					MetaData: EdgeMetaData{
+						SourceUid: "src1",
+						TargetUid: "missing_tgt",
+					},
+				},
+			},
+		},
+	}
+
+	_, err := graph.BatchInsertEdges(graphData)
+	if err == nil {
+		t.Error("should return error when targetNode does not exist")
+	}
+	if err.Error() != "this edge's targetNode does not exist" {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+func TestGraphToRows(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{
+		Uid:      "n1",
+		MetaData: NodeMetaData{Kind: "Node", Region: "cn-1"},
+	}
+	graph.Edges["e1"] = GraphEdge{
+		Uid:      "e1",
+		MetaData: EdgeMetaData{Kind: "LOCATE", SourceUid: "n1", TargetUid: "n2"},
+	}
+
+	rows := graph.GraphToRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows (nodes + edges), got %d", len(rows))
+	}
+
+	nodeRow := rows[0]
+	if nodeRow.Columns[0] != "Uid" || nodeRow.Columns[1] != "MetaData" {
+		t.Error("node row columns mismatch")
+	}
+	if len(nodeRow.Values) != 1 {
+		t.Errorf("expected 1 node value, got %d", len(nodeRow.Values))
+	}
+
+	edgeRow := rows[1]
+	if edgeRow.Columns[0] != "Uid" || edgeRow.Columns[1] != "MetaData" {
+		t.Error("edge row columns mismatch")
+	}
+	if len(edgeRow.Values) != 1 {
+		t.Errorf("expected 1 edge value, got %d", len(edgeRow.Values))
+	}
+}
+
+func TestGraphToRowsEmpty(t *testing.T) {
+	graph := NewGraph()
+	rows := graph.GraphToRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if len(rows[0].Values) != 0 {
+		t.Error("node row should have 0 values for empty graph")
+	}
+	if len(rows[1].Values) != 0 {
+		t.Error("edge row should have 0 values for empty graph")
+	}
+}
+
+func TestAddToBufMap(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{Uid: "n1"}
+	graph.Nodes["n2"] = GraphNode{Uid: "n2"}
+
+	bufMap := make(map[interface{}]struct{})
+	graph.addToBufMap(bufMap)
+
+	if len(bufMap) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(bufMap))
+	}
+	if _, ok := bufMap["n1"]; !ok {
+		t.Error("bufMap should contain n1")
+	}
+	if _, ok := bufMap["n2"]; !ok {
+		t.Error("bufMap should contain n2")
+	}
+}
+
+func TestMultiHopFilterStartNodeNotFound(t *testing.T) {
+	graph := NewGraph()
+	_, err := graph.MultiHopFilter("nonexistent", 1, nil, nil)
+	if err == nil {
+		t.Error("should return error when startNode not found")
+	}
+}
+
+func TestMultiHopFilterZeroHop(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{
+		Uid:      "n1",
+		MetaData: NodeMetaData{Kind: "Node", Region: "cn-1"},
+		OutEdges: []string{"e1"},
+	}
+	graph.Nodes["n2"] = GraphNode{Uid: "n2", MetaData: NodeMetaData{Kind: "Pod"}}
+	graph.Edges["e1"] = GraphEdge{
+		Uid: "e1",
+		MetaData: EdgeMetaData{
+			Kind:      "LOCATE",
+			SourceUid: "n1",
+			TargetUid: "n2",
+		},
+	}
+
+	subgraph, err := graph.MultiHopFilter("n1", 0, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(subgraph.Nodes) != 1 {
+		t.Errorf("expected 1 node with hopNum=0, got %d", len(subgraph.Nodes))
+	}
+	if len(subgraph.Edges) != 0 {
+		t.Errorf("expected 0 edges with hopNum=0, got %d", len(subgraph.Edges))
+	}
+}
+
+func TestCreateGraphInvalidJSON(t *testing.T) {
+	graph := NewGraph()
+	ok, err := graph.CreateGraph("not valid json")
+	if ok {
+		t.Error("should return false for invalid JSON")
+	}
+	if err == nil || err.Error() != "error parsing JSON" {
+		t.Errorf("expected 'error parsing JSON', got %v", err)
+	}
+}
+
+func TestCreateGraphSuccess(t *testing.T) {
+	graph := NewGraph()
+	jsonData := `{
+		"data": {
+			"resultUid": "test-uid",
+			"metadata": { "region": "global", "timestamp": "123", "topokeys": [] },
+			"graph": {
+				"vertex": [
+					{"uid": "n1", "metadata": {"kind": "Node", "region": "r1", "tags": {}}},
+					{"uid": "n2", "metadata": {"kind": "Pod", "region": "r2", "tags": {}}}
+				],
+				"edges": [
+					{
+						"uid": "e1",
+						"metadata": {
+							"kind": "LOCATE",
+							"sourceTopoKey": "s0",
+							"sourceUid": "n1",
+							"targetTopoKey": "s1",
+							"targetUid": "n2",
+							"tags": {}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	ok, err := graph.CreateGraph(jsonData)
+	if !ok {
+		t.Error("CreateGraph should succeed")
+	}
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(graph.Nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(graph.Nodes))
+	}
+	if len(graph.Edges) != 1 {
+		t.Errorf("expected 1 edge, got %d", len(graph.Edges))
+	}
+}
+
+func TestCheckNodeFilterCondition(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{
+		Uid:      "n1",
+		MetaData: NodeMetaData{Kind: "Pod", Tags: map[string]string{"region": "us-east"}},
+	}
+	graph.Nodes["n2"] = GraphNode{
+		Uid:      "n2",
+		MetaData: NodeMetaData{Kind: "Node", Tags: map[string]string{}},
+	}
+
+	edge := GraphEdge{
+		MetaData: EdgeMetaData{SourceUid: "n1", TargetUid: "n2"},
+	}
+
+	// kind match (outgoing direction checks target node)
+	match, err := graph.checkNodeFilterCondition("kind", "Node", edge, influxql.EQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("kind should match Node for target node")
+	}
+
+	// kind mismatch
+	match, err = graph.checkNodeFilterCondition("kind", "Service", edge, influxql.EQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if match {
+		t.Error("kind should not match Service for target node")
+	}
+
+	// uid match (incoming direction checks source node)
+	match, err = graph.checkNodeFilterCondition("uid", "n1", edge, influxql.EQ, IncomeOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("uid should match n1 for source node")
+	}
+
+	// uid NEQ
+	match, err = graph.checkNodeFilterCondition("uid", "n3", edge, influxql.NEQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("uid NEQ n3 should match for target node n2")
+	}
+
+	// property match
+	match, err = graph.checkNodeFilterCondition("region", "us-east", edge, influxql.EQ, IncomeOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("region property should match us-east for source node")
+	}
+
+	// property NEQ when key exists with different value
+	match, err = graph.checkNodeFilterCondition("region", "us-west", edge, influxql.NEQ, IncomeOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("region NEQ us-west should be true since region=us-east")
+	}
+
+	// property NEQ when key does not exist
+	match, err = graph.checkNodeFilterCondition("nonexistent", "val", edge, influxql.NEQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("nonexistent NEQ val should be true")
+	}
+
+	// property EQ when key does not exist
+	match, err = graph.checkNodeFilterCondition("nonexistent", "val", edge, influxql.EQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if match {
+		t.Error("nonexistent EQ val should be false")
+	}
+}
+
+func TestCheckEdgeFilterCondition(t *testing.T) {
+	graph := NewGraph()
+
+	edge := GraphEdge{
+		MetaData: EdgeMetaData{
+			Kind: "LOCATE",
+			Tags: map[string]string{"edgeprop": "val1"},
+		},
+	}
+
+	// kind match
+	match, err := graph.checkEdgeFilterCondition("kind", "LOCATE", edge, influxql.EQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("kind should match LOCATE")
+	}
+
+	// kind NEQ
+	match, err = graph.checkEdgeFilterCondition("kind", "communication", edge, influxql.NEQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("kind NEQ communication should match LOCATE edge")
+	}
+
+	// property match
+	match, err = graph.checkEdgeFilterCondition("edgeprop", "val1", edge, influxql.EQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("edgeprop should match val1")
+	}
+
+	// property NEQ when key missing
+	match, err = graph.checkEdgeFilterCondition("missing", "val", edge, influxql.NEQ, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("missing NEQ val should be true")
+	}
+}
+
+func TestCheckCondition(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{
+		Uid:      "n1",
+		MetaData: NodeMetaData{Kind: "Pod", Tags: map[string]string{"app": "web"}},
+	}
+
+	checkField := func(expr influxql.Expr) (bool, error) {
+		binaryExpr := expr.(*influxql.BinaryExpr)
+		varRef := binaryExpr.LHS.(*influxql.VarRef)
+		literal := binaryExpr.RHS.(*influxql.StringLiteral)
+		return graph.checkNodeFilterCondition(varRef.Val, literal.Val, GraphEdge{
+			MetaData: EdgeMetaData{SourceUid: "n1", TargetUid: "n1"},
+		}, binaryExpr.Op, OutGoOp)
+	}
+
+	// nil condition returns true
+	match, err := graph.checkCondition(nil, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("nil condition should return true")
+	}
+
+	// simple EQ
+	eqExpr := &influxql.BinaryExpr{
+		Op:  influxql.EQ,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "Pod"},
+	}
+	match, err = graph.checkCondition(eqExpr, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("kind=Pod should match")
+	}
+
+	// AND with both true
+	andExpr := &influxql.BinaryExpr{
+		Op: influxql.AND,
+		LHS: &influxql.BinaryExpr{
+			Op: influxql.EQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Pod"},
+		},
+		RHS: &influxql.BinaryExpr{
+			Op: influxql.NEQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Service"},
+		},
+	}
+	match, err = graph.checkCondition(andExpr, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("AND with both true should match")
+	}
+
+	// AND with one false (short-circuit)
+	andFalseExpr := &influxql.BinaryExpr{
+		Op: influxql.AND,
+		LHS: &influxql.BinaryExpr{
+			Op: influxql.EQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Node"},
+		},
+		RHS: &influxql.BinaryExpr{
+			Op: influxql.NEQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Service"},
+		},
+	}
+	match, err = graph.checkCondition(andFalseExpr, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if match {
+		t.Error("AND with one false should not match")
+	}
+
+	// OR with first true (short-circuit)
+	orExpr := &influxql.BinaryExpr{
+		Op: influxql.OR,
+		LHS: &influxql.BinaryExpr{
+			Op: influxql.EQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Pod"},
+		},
+		RHS: &influxql.BinaryExpr{
+			Op: influxql.EQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Node"},
+		},
+	}
+	match, err = graph.checkCondition(orExpr, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("OR with first true should match")
+	}
+
+	// ParenExpr
+	parenExpr := &influxql.ParenExpr{
+		Expr: &influxql.BinaryExpr{
+			Op: influxql.EQ, LHS: &influxql.VarRef{Val: "kind"}, RHS: &influxql.StringLiteral{Val: "Pod"},
+		},
+	}
+	match, err = graph.checkCondition(parenExpr, checkField)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("ParenExpr with matching condition should match")
+	}
+
+	// unsupported operator
+	unsupportedExpr := &influxql.BinaryExpr{
+		Op:  influxql.GT,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "Pod"},
+	}
+	_, err = graph.checkCondition(unsupportedExpr, checkField)
+	if err == nil {
+		t.Error("should return error for unsupported operator")
+	}
+}
+
+func TestIsMatchQueryConditions(t *testing.T) {
+	graph := NewGraph()
+	graph.Nodes["n1"] = GraphNode{
+		Uid:      "n1",
+		MetaData: NodeMetaData{Kind: "Pod", Tags: map[string]string{"app": "web"}},
+	}
+	graph.Nodes["n2"] = GraphNode{
+		Uid:      "n2",
+		MetaData: NodeMetaData{Kind: "Node", Tags: map[string]string{}},
+	}
+
+	edge := GraphEdge{
+		MetaData: EdgeMetaData{
+			Kind:      "LOCATE",
+			SourceUid: "n1",
+			TargetUid: "n2",
+			Tags:      map[string]string{"edgeprop": "val1"},
+		},
+	}
+
+	// both conditions match
+	nodeCond := &influxql.BinaryExpr{
+		Op:  influxql.EQ,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "Node"},
+	}
+	edgeCond := &influxql.BinaryExpr{
+		Op:  influxql.EQ,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "LOCATE"},
+	}
+	match, err := graph.isMatchQueryConditions(nodeCond, edgeCond, edge, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("should match when both conditions are satisfied")
+	}
+
+	// node condition matches but edge doesn't
+	nodeCondMatch := &influxql.BinaryExpr{
+		Op:  influxql.EQ,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "Node"},
+	}
+	edgeCondNoMatch := &influxql.BinaryExpr{
+		Op:  influxql.EQ,
+		LHS: &influxql.VarRef{Val: "kind"},
+		RHS: &influxql.StringLiteral{Val: "communication"},
+	}
+	match, err = graph.isMatchQueryConditions(nodeCondMatch, edgeCondNoMatch, edge, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if match {
+		t.Error("should not match when edge condition is not satisfied")
+	}
+
+	// both nil conditions
+	match, err = graph.isMatchQueryConditions(nil, nil, edge, OutGoOp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !match {
+		t.Error("should match when both conditions are nil")
+	}
+}
