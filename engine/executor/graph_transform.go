@@ -134,6 +134,25 @@ func OperateParam(e influxql.Expr, param *util.Param) error {
 	return nil
 }
 
+// TopoDataFetcher fetches the raw topology payload for a query. It is a package
+// variable so tests can inject a fixed payload in place of a real topo-service
+// call; production code never embeds mock topology data.
+var TopoDataFetcher = fetchTopoDataFromClient
+
+func fetchTopoDataFromClient(param util.Param, startTime string, endTime string) (string, error) {
+	if util.GetClientConf().Conf.Path == "" {
+		return "", errors.New("topo client is not configured")
+	}
+	topoData, err := util.GetClientConf().SendGetRequest(util.HttpsClient, param, startTime, endTime)
+	if err != nil {
+		return "", err
+	}
+	if topoData == "" {
+		return "", errors.New("empty topo response")
+	}
+	return topoData, nil
+}
+
 func (trans *GraphTransform) Work(ctx context.Context) error {
 	span := trans.StartSpan("[GraphTransform] TotalWorkCost", false)
 	trans.workTracing = tracing.Start(span, "cost_for_GraphTransform", false)
@@ -158,21 +177,13 @@ func (trans *GraphTransform) Work(ctx context.Context) error {
 		}
 	}
 
-	var topoData string
-	if util.GetClientConf().Conf.Path != "" {
-		response, err := util.GetClientConf().SendGetRequest(util.HttpsClient, param, startTime, endTime)
-		if err == nil && response != "" {
-			topoData = response
-		} else {
-			return err
-		}
-	} else {
-		topoData = mockGetTimeGraph()
+	topoData, err := TopoDataFetcher(param, startTime, endTime)
+	if err != nil {
+		return err
 	}
 
 	graph := NewGraph()
-	success, err := graph.CreateGraph(topoData)
-	if !success {
+	if err := graph.CreateGraph(topoData); err != nil {
 		return err
 	}
 	subGraph, err := graph.MultiHopFilter(trans.stmt.StartNodeId, trans.stmt.HopNum, trans.stmt.NodeCondition, trans.stmt.EdgeCondition)

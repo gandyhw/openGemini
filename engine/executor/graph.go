@@ -17,7 +17,6 @@ package executor
 import (
 	"container/list"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/influxdata/influxdb/models"
@@ -25,6 +24,8 @@ import (
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/influxql"
 )
 
+// GraphNode is a vertex of the topology graph. OutEdges and InEdges hold the
+// uids of the edges adjacent to the node, indexed by Graph.Edges.
 type GraphNode struct {
 	Uid      string       `json:"uid"`
 	MetaData NodeMetaData `json:"metadata"`
@@ -32,17 +33,21 @@ type GraphNode struct {
 	InEdges  []string
 }
 
+// NodeMetaData carries the descriptive attributes of a GraphNode.
 type NodeMetaData struct {
 	Kind   string            `json:"kind"`
 	Region string            `json:"region"`
 	Tags   map[string]string `json:"tags"`
 }
 
+// GraphEdge is a directed edge of the topology graph.
 type GraphEdge struct {
 	Uid      string       `json:"uid"`
 	MetaData EdgeMetaData `json:"metadata"`
 }
 
+// EdgeMetaData carries the descriptive attributes of a GraphEdge, including the
+// uids of its source and target nodes.
 type EdgeMetaData struct {
 	Kind          string            `json:"kind"`
 	SourceTopoKey string            `json:"sourceTopoKey"`
@@ -52,54 +57,59 @@ type EdgeMetaData struct {
 	Tags          map[string]string `json:"tags"`
 }
 
-type Property struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
+// GraphData is the topology payload returned by the topo service.
 type GraphData struct {
 	ResultUid string   `json:"resultUid"`
 	MetaData  MetaData `json:"metadata"`
 	Graph     TopoInfo `json:"graph"`
 }
 
+// TopoInfo holds the raw vertices and edges of a topology graph.
 type TopoInfo struct {
 	Vertex []GraphNode `json:"vertex"`
 	Edges  []GraphEdge `json:"edges"`
 }
 
+// Response is the top-level envelope of the topo service response.
 type Response struct {
 	Data GraphData `json:"data"`
 }
 
+// MetaData carries graph-level metadata of a topology payload.
 type MetaData struct {
 	Region    string   `json:"region"`
 	Timestamp string   `json:"timestamp"`
 	Topokeys  []string `json:"topokeys"`
 }
 
+// Graph is an in-memory topology graph indexed by node and edge uid.
 type Graph struct {
 	Nodes map[string]GraphNode
 	Edges map[string]GraphEdge
 }
 
+// Field names recognised in node/edge filter conditions.
 const (
-	Kind     string = "kind"
-	Uid      string = "uid"
-	IncomeOp string = "income"
-	OutGoOp  string = "outgo"
+	Kind string = "kind"
+	Uid  string = "uid"
 )
 
+// hopDirection indicates which endpoint of an edge a hop traverses towards.
+type hopDirection int
+
+const (
+	hopIncoming hopDirection = iota // traverse from an edge's target to its source
+	hopOutgoing                     // traverse from an edge's source to its target
+)
+
+// IGraph is the behaviour consumed from a graph once it has been attached to a
+// chunk. Construction helpers (CreateGraph, BatchInsert*) operate on the
+// concrete *Graph and are intentionally not part of this interface.
 type IGraph interface {
-	GetNodeInfo(id string) *GraphNode
-	GetEdgeInfo(id string) *GraphEdge
-	BatchInsertNodes(graphData GraphData) bool
-	BatchInsertEdges(graphData GraphData) (bool, error)
-	CreateGraph(jsonGraphData string) (bool, error)
-	MultiHopFilter(startNodeId string, hopNum int, nodeCondition influxql.Expr, edgeCondition influxql.Expr) (*Graph, error)
 	GraphToRows() models.Rows
 }
 
+// NewGraph returns an empty Graph ready for insertion.
 func NewGraph() *Graph {
 	return &Graph{
 		Nodes: make(map[string]GraphNode),
@@ -107,73 +117,77 @@ func NewGraph() *Graph {
 	}
 }
 
-func (G *Graph) GetNodeInfo(id string) *GraphNode {
-	if node, ok := G.Nodes[id]; ok {
+// GetNodeInfo returns a copy of the node with the given uid, or nil if absent.
+// The returned value is a snapshot; mutating it does not affect the graph.
+func (g *Graph) GetNodeInfo(id string) *GraphNode {
+	if node, ok := g.Nodes[id]; ok {
 		return &node
 	}
 	return nil
 }
 
-func (G *Graph) GetEdgeInfo(id string) *GraphEdge {
-	if edge, ok := G.Edges[id]; ok {
+// GetEdgeInfo returns a copy of the edge with the given uid, or nil if absent.
+// The returned value is a snapshot; mutating it does not affect the graph.
+func (g *Graph) GetEdgeInfo(id string) *GraphEdge {
+	if edge, ok := g.Edges[id]; ok {
 		return &edge
 	}
 	return nil
 }
 
-func (G *Graph) BatchInsertNodes(graphData GraphData) bool {
+// BatchInsertNodes inserts all vertices of graphData into the graph.
+func (g *Graph) BatchInsertNodes(graphData GraphData) {
 	for _, node := range graphData.Graph.Vertex {
-		G.Nodes[node.Uid] = node
+		g.Nodes[node.Uid] = node
 	}
-	return true
 }
 
-func (G *Graph) BatchInsertEdges(graphData GraphData) (bool, error) {
+// BatchInsertEdges inserts the edges of graphData and wires up the adjacency
+// lists of their endpoints. Only the edges in this batch are wired so that the
+// method may be called incrementally without duplicating adjacency entries.
+func (g *Graph) BatchInsertEdges(graphData GraphData) error {
 	for _, edge := range graphData.Graph.Edges {
-		G.Edges[edge.Uid] = edge
-	}
-	for edgeId, edge := range G.Edges {
-		sourceNode, ok := G.Nodes[edge.MetaData.SourceUid]
+		g.Edges[edge.Uid] = edge
+
+		sourceNode, ok := g.Nodes[edge.MetaData.SourceUid]
 		if !ok {
-			// todo: handle the condition where the source node or target node does not exist
-			return false, errors.New("this edge's sourceNode does not exist")
+			return fmt.Errorf("this edge's sourceNode does not exist")
 		}
-		sourceNode.OutEdges = append(sourceNode.OutEdges, edgeId)
-		G.Nodes[edge.MetaData.SourceUid] = sourceNode
-		targetNode, ok := G.Nodes[edge.MetaData.TargetUid]
+		sourceNode.OutEdges = append(sourceNode.OutEdges, edge.Uid)
+		g.Nodes[edge.MetaData.SourceUid] = sourceNode
+
+		targetNode, ok := g.Nodes[edge.MetaData.TargetUid]
 		if !ok {
-			return false, errors.New("this edge's targetNode does not exist")
+			return fmt.Errorf("this edge's targetNode does not exist")
 		}
-		targetNode.InEdges = append(targetNode.InEdges, edgeId)
-		G.Nodes[edge.MetaData.TargetUid] = targetNode
+		targetNode.InEdges = append(targetNode.InEdges, edge.Uid)
+		g.Nodes[edge.MetaData.TargetUid] = targetNode
 	}
-	return true, nil
+	return nil
 }
 
-func (G *Graph) CreateGraph(jsonGraphData string) (bool, error) {
+// CreateGraph builds the graph from a JSON topology payload.
+func (g *Graph) CreateGraph(jsonGraphData string) error {
 	var resp Response
-	err := json.Unmarshal([]byte(jsonGraphData), &resp)
-	if err != nil {
-		return false, errors.New("error parsing JSON")
+	if err := json.Unmarshal([]byte(jsonGraphData), &resp); err != nil {
+		return fmt.Errorf("parse graph json: %w", err)
 	}
-	if !G.BatchInsertNodes(resp.Data) {
-		return false, nil
-	}
-	if ok, err := G.BatchInsertEdges(resp.Data); err != nil || !ok {
-		return false, err
-	}
-	return true, nil
+	g.BatchInsertNodes(resp.Data)
+	return g.BatchInsertEdges(resp.Data)
 }
 
-func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition influxql.Expr, edgeCondition influxql.Expr) (*Graph, error) {
-	startNode, ok := G.Nodes[startNodeId]
+// MultiHopFilter performs a breadth-first traversal of up to hopNum hops from
+// startNodeId, keeping only the nodes and edges that satisfy nodeCondition and
+// edgeCondition, and returns the resulting subgraph.
+func (g *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition influxql.Expr, edgeCondition influxql.Expr) (*Graph, error) {
+	startNode, ok := g.Nodes[startNodeId]
 	if !ok {
 		return nil, fmt.Errorf("MultiHopFilter startNodeId not found %s", startNodeId)
 	}
 
 	edgesBySource := make(map[string][]GraphEdge)
 	edgesByTarget := make(map[string][]GraphEdge)
-	for _, edge := range G.Edges {
+	for _, edge := range g.Edges {
 		edgesBySource[edge.MetaData.SourceUid] = append(edgesBySource[edge.MetaData.SourceUid], edge)
 		edgesByTarget[edge.MetaData.TargetUid] = append(edgesByTarget[edge.MetaData.TargetUid], edge)
 	}
@@ -183,10 +197,7 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 	queue.PushBack(startNode)
 	visited[startNodeId] = struct{}{}
 
-	subgraph := &Graph{
-		Nodes: make(map[string]GraphNode),
-		Edges: make(map[string]GraphEdge),
-	}
+	subgraph := NewGraph()
 	subgraph.Nodes[startNodeId] = startNode
 
 	for queue.Len() > 0 && hopNum > 0 {
@@ -194,88 +205,74 @@ func (G *Graph) MultiHopFilter(startNodeId string, hopNum int, nodeCondition inf
 		for i := 0; i < levelSize; i++ {
 			current, ok := queue.Remove(queue.Front()).(GraphNode)
 			if !ok {
-				return nil, errors.New("error: queue.Remove(queue.Front()) is not of type Node")
+				return nil, fmt.Errorf("queue element is not of type GraphNode")
 			}
 
-			// check outgoing edges
-			outGoingEdges, ok := edgesBySource[current.Uid]
-			if ok && outGoingEdges != nil {
-				_, err := G.processEdges(outGoingEdges, subgraph, &visited, queue, nodeCondition, edgeCondition, OutGoOp)
-				if err != nil {
-					return nil, err
-				}
+			if err := g.processEdges(edgesBySource[current.Uid], subgraph, visited, queue, nodeCondition, edgeCondition, hopOutgoing); err != nil {
+				return nil, err
 			}
-
-			// check incoming edges
-			inComingEdges, ok := edgesByTarget[current.Uid]
-			if !ok || inComingEdges == nil {
-				continue
-			}
-			_, err := G.processEdges(inComingEdges, subgraph, &visited, queue, nodeCondition, edgeCondition, IncomeOp)
-			if err != nil {
+			if err := g.processEdges(edgesByTarget[current.Uid], subgraph, visited, queue, nodeCondition, edgeCondition, hopIncoming); err != nil {
 				return nil, err
 			}
 		}
 
 		hopNum--
-		if len(visited) == len(G.Nodes) {
+		if len(visited) == len(g.Nodes) {
 			break
 		}
 	}
 	return subgraph, nil
 }
 
-func (G *Graph) processEdges(edges []GraphEdge, subgraph *Graph, visited *map[string]struct{}, queue *list.List, nodeCondition influxql.Expr, edgeCondition influxql.Expr, hopDir string) (*Graph, error) {
+// processEdges evaluates the filter conditions against each edge and, for the
+// matching ones, adds the edge and its unvisited endpoint to subgraph and
+// enqueues that endpoint for the next hop.
+func (g *Graph) processEdges(edges []GraphEdge, subgraph *Graph, visited map[string]struct{}, queue *list.List, nodeCondition influxql.Expr, edgeCondition influxql.Expr, hopDir hopDirection) error {
 	for _, edge := range edges {
-		isMatch, err := G.isMatchQueryConditions(nodeCondition, edgeCondition, edge, hopDir)
+		isMatch, err := g.isMatchQueryConditions(nodeCondition, edgeCondition, edge, hopDir)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if !isMatch {
 			continue
 		}
-		var curNode GraphNode
-		var curUid string
-		if hopDir == IncomeOp {
+
+		curUid := edge.MetaData.TargetUid
+		if hopDir == hopIncoming {
 			curUid = edge.MetaData.SourceUid
-			if _, exists := G.Nodes[curUid]; !exists {
-				return nil, fmt.Errorf("topo data received from api is incorrect")
-			}
-			curNode = G.Nodes[curUid]
-		} else {
-			curUid = edge.MetaData.TargetUid
-			if _, exists := G.Nodes[curUid]; !exists {
-				return nil, fmt.Errorf("topo data received from api is incorrect")
-			}
-			curNode = G.Nodes[curUid]
 		}
+		curNode, exists := g.Nodes[curUid]
+		if !exists {
+			return fmt.Errorf("topo data received from api is incorrect")
+		}
+
 		subgraph.Edges[edge.Uid] = edge
-		if _, exists := (*visited)[curUid]; exists {
+		if _, ok := visited[curUid]; ok {
 			continue
 		}
 		subgraph.Nodes[curNode.Uid] = curNode
-		(*visited)[curNode.Uid] = struct{}{}
+		visited[curNode.Uid] = struct{}{}
 		queue.PushBack(curNode)
 	}
-	return subgraph, nil
+	return nil
 }
 
-func (G *Graph) isMatchQueryConditions(nodeCondition influxql.Expr, edgeCondition influxql.Expr, edge GraphEdge, hopDir string) (bool, error) {
-	isNodeMatch, err := G.isFilterConditionMatch(nodeCondition, edge, hopDir, G.checkNodeFilterCondition)
+// isMatchQueryConditions reports whether edge satisfies both the node and edge
+// filter conditions.
+func (g *Graph) isMatchQueryConditions(nodeCondition influxql.Expr, edgeCondition influxql.Expr, edge GraphEdge, hopDir hopDirection) (bool, error) {
+	isNodeMatch, err := g.isFilterConditionMatch(nodeCondition, edge, hopDir, g.checkNodeFilterCondition)
 	if err != nil {
 		return false, err
 	}
-	isEdgeMatch, err := G.isFilterConditionMatch(edgeCondition, edge, hopDir, G.checkEdgeFilterCondition)
+	isEdgeMatch, err := g.isFilterConditionMatch(edgeCondition, edge, hopDir, g.checkEdgeFilterCondition)
 	if err != nil {
 		return false, err
 	}
-	isMatch := isNodeMatch && isEdgeMatch
-	return isMatch, nil
+	return isNodeMatch && isEdgeMatch, nil
 }
 
-func (G *Graph) isFilterConditionMatch(Cond influxql.Expr, edge GraphEdge, hopDir string, handler func(left string, right string, edge GraphEdge, op influxql.Token, hopDir string) (bool, error)) (bool, error) {
+func (g *Graph) isFilterConditionMatch(cond influxql.Expr, edge GraphEdge, hopDir hopDirection, handler func(varRef string, literal string, edge GraphEdge, op influxql.Token, hopDir hopDirection) (bool, error)) (bool, error) {
 	checkField := func(expr influxql.Expr) (bool, error) {
-
 		binaryExpr, ok := expr.(*influxql.BinaryExpr)
 		if !ok {
 			return false, errno.NewError(errno.ConvertToBinaryExprFailed, expr)
@@ -287,12 +284,12 @@ func (G *Graph) isFilterConditionMatch(Cond influxql.Expr, edge GraphEdge, hopDi
 		case influxql.EQ, influxql.NEQ:
 			if varRef, ok = binaryExpr.LHS.(*influxql.VarRef); !ok {
 				if varRef, ok = binaryExpr.RHS.(*influxql.VarRef); !ok {
-					return false, errors.New("unsupported edge or node filter condition syntax")
+					return false, fmt.Errorf("unsupported edge or node filter condition syntax")
 				}
 			}
 			if literal, ok = binaryExpr.RHS.(*influxql.StringLiteral); !ok {
 				if literal, ok = binaryExpr.LHS.(*influxql.StringLiteral); !ok {
-					return false, errors.New("unsupported edge or node filter condition syntax")
+					return false, fmt.Errorf("unsupported edge or node filter condition syntax")
 				}
 			}
 			return handler(varRef.Val, literal.Val, edge, binaryExpr.Op, hopDir)
@@ -300,64 +297,52 @@ func (G *Graph) isFilterConditionMatch(Cond influxql.Expr, edge GraphEdge, hopDi
 			return false, fmt.Errorf("unsupported operator: %s", binaryExpr.Op)
 		}
 	}
-	return G.checkCondition(Cond, checkField)
+	return g.checkCondition(cond, checkField)
 }
 
-func (G *Graph) checkEdgeFilterCondition(varRef string, literal string, edge GraphEdge, op influxql.Token, hopDir string) (bool, error) {
+func (g *Graph) checkEdgeFilterCondition(varRef string, literal string, edge GraphEdge, op influxql.Token, hopDir hopDirection) (bool, error) {
 	switch varRef {
 	case Kind:
-		return (op == influxql.EQ && edge.MetaData.Kind == literal) || (op == influxql.NEQ && edge.MetaData.Kind != literal), nil
+		return matchString(edge.MetaData.Kind, literal, op), nil
 	default:
-		return G.checkEdgeProperties(varRef, literal, edge, op)
+		return matchTag(edge.MetaData.Tags, varRef, literal, op), nil
 	}
 }
 
-func (G *Graph) checkNodeFilterCondition(varRef string, literal string, edge GraphEdge, op influxql.Token, hopDir string) (bool, error) {
-	var nodeUid string
-	if hopDir == IncomeOp {
+func (g *Graph) checkNodeFilterCondition(varRef string, literal string, edge GraphEdge, op influxql.Token, hopDir hopDirection) (bool, error) {
+	nodeUid := edge.MetaData.TargetUid
+	if hopDir == hopIncoming {
 		nodeUid = edge.MetaData.SourceUid
-	} else {
-		nodeUid = edge.MetaData.TargetUid
+	}
+	node, ok := g.Nodes[nodeUid]
+	if !ok {
+		return false, fmt.Errorf("the nodeUid not found")
 	}
 	switch varRef {
 	case Kind:
-		return (op == influxql.EQ && G.Nodes[nodeUid].MetaData.Kind == literal) || (op == influxql.NEQ && G.Nodes[nodeUid].MetaData.Kind != literal), nil
+		return matchString(node.MetaData.Kind, literal, op), nil
 	case Uid:
-		return (op == influxql.EQ && nodeUid == literal) || (op == influxql.NEQ && nodeUid != literal), nil
+		return matchString(nodeUid, literal, op), nil
 	default:
-		return G.checkNodeProperties(varRef, literal, nodeUid, op)
+		return matchTag(node.MetaData.Tags, varRef, literal, op), nil
 	}
 }
 
-func (G *Graph) checkNodeProperties(key string, val string, nodeUid string, op influxql.Token) (bool, error) {
-	nodeProp, ok := G.Nodes[nodeUid]
-	if !ok {
-		return false, errors.New("the nodeUid not found")
-	}
-	for k, v := range nodeProp.MetaData.Tags {
-		if k == key {
-			return (op == influxql.EQ && v == val) || (op == influxql.NEQ && v != val), nil
-		}
-	}
-	if op == influxql.NEQ {
-		return true, nil
-	}
-	return false, nil
+// matchString evaluates an EQ/NEQ comparison between two strings.
+func matchString(actual string, expected string, op influxql.Token) bool {
+	return (op == influxql.EQ && actual == expected) || (op == influxql.NEQ && actual != expected)
 }
 
-func (G *Graph) checkEdgeProperties(key string, val string, edge GraphEdge, op influxql.Token) (bool, error) {
-	for k, v := range edge.MetaData.Tags {
-		if k == key {
-			return (op == influxql.EQ && v == val) || (op == influxql.NEQ && v != val), nil
-		}
+// matchTag evaluates an EQ/NEQ comparison against a tag value. A missing tag
+// matches NEQ (the value differs) and never matches EQ.
+func matchTag(tags map[string]string, key string, val string, op influxql.Token) bool {
+	if v, ok := tags[key]; ok {
+		return matchString(v, val, op)
 	}
-	if op == influxql.NEQ {
-		return true, nil
-	}
-	return false, nil
+	return op == influxql.NEQ
 }
 
-func (G *Graph) checkCondition(expr influxql.Expr, checkField func(influxql.Expr) (bool, error)) (bool, error) {
+func (g *Graph) checkCondition(expr influxql.Expr, checkField func(influxql.Expr) (bool, error)) (bool, error) {
 	if expr == nil {
 		return true, nil
 	}
@@ -367,399 +352,50 @@ func (G *Graph) checkCondition(expr influxql.Expr, checkField func(influxql.Expr
 		case influxql.EQ, influxql.NEQ:
 			return checkField(expr)
 		case influxql.OR:
-			leftResult, err := G.checkCondition(binaryExpr.LHS, checkField)
+			leftResult, err := g.checkCondition(binaryExpr.LHS, checkField)
 			if err != nil {
 				return false, err
 			}
 			if leftResult {
 				return true, nil
 			}
-			rightResult, err := G.checkCondition(binaryExpr.RHS, checkField)
-			if err != nil {
-				return false, err
-			}
-			return rightResult, nil
+			return g.checkCondition(binaryExpr.RHS, checkField)
 		case influxql.AND:
-			leftResult, err := G.checkCondition(binaryExpr.LHS, checkField)
+			leftResult, err := g.checkCondition(binaryExpr.LHS, checkField)
 			if err != nil {
 				return false, err
 			}
 			if !leftResult {
 				return false, nil
 			}
-			rightResult, err := G.checkCondition(binaryExpr.RHS, checkField)
-			if err != nil {
-				return false, err
-			}
-			return rightResult, nil
+			return g.checkCondition(binaryExpr.RHS, checkField)
 		default:
 			return false, fmt.Errorf("unsupported operator: %s", binaryExpr.Op)
 		}
 	}
-	// handle ParenExpr
 	if parenExpr, ok := expr.(*influxql.ParenExpr); ok {
-		return G.checkCondition(parenExpr.Expr, checkField)
+		return g.checkCondition(parenExpr.Expr, checkField)
 	}
 
 	return checkField(expr)
 }
 
-func (G *Graph) GraphToRows() models.Rows {
+// GraphToRows renders the graph's nodes and edges as two models.Row tables.
+func (g *Graph) GraphToRows() models.Rows {
 	nodeRow := &models.Row{Columns: []string{"Uid", "MetaData"}}
-	for _, node := range G.Nodes {
+	for _, node := range g.Nodes {
 		nodeRow.Values = append(nodeRow.Values, []interface{}{node.Uid, node.MetaData})
 	}
 
 	edgeRow := &models.Row{Columns: []string{"Uid", "MetaData"}}
-	for _, edge := range G.Edges {
+	for _, edge := range g.Edges {
 		edgeRow.Values = append(edgeRow.Values, []interface{}{edge.Uid, edge.MetaData})
 	}
 	return models.Rows{nodeRow, edgeRow}
 }
 
-func (G *Graph) addToBufMap(bufMap map[interface{}]struct{}) {
-	for _, v := range G.Nodes {
-		(bufMap)[v.Uid] = struct{}{}
+func (g *Graph) addToBufMap(bufMap map[interface{}]struct{}) {
+	for _, v := range g.Nodes {
+		bufMap[v.Uid] = struct{}{}
 	}
-}
-
-func mockGetTimeGraph() string {
-	jsonNodeData := `{
-    "data": {
-		  "resultUid": "eadee230-db0a-40df-887c-9958e1d872df",
-		  "metadata": {
-			"region": "global",
-			"timestamp": "1753080098056",
-			"topokeys": ["source0", "source1"]
-		  },
-		  "graph": {
-			"vertex": [
-			  {
-				"uid": "vm1",
-				"metadata": {
-				  "kind": "Node",
-				  "region": "cn-north-1",
-				  "tags": { "namedb": "db1", "prop1": "value1" }
-				}
-			  },
-			  {
-				"uid": "vm2",
-				"metadata": {
-				  "kind": "Node",
-				  "region": "cn-north-1",
-				  "tags": { "namedb": "db2", "propvm2": "valuevm2" }
-				}
-			  },
-			  {
-				"uid": "vm3",
-				"metadata": {
-				  "kind": "Node",
-				  "region": "cn-east-1",
-				  "tags": { "namedb": "db3", "namedbtest": "db3test" }
-				}
-			  },
-			  {
-				"uid": "vm4",
-				"metadata": {
-				  "kind": "Node",
-				  "region": "cn-east-2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "vm5",
-				"metadata": {
-				  "kind": "Node",
-				  "region": "cn-south-1",
-				  "tags": { "namedb": "db5" }
-				}
-			  },
-			  {
-				"uid": "ELB",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-south-2",
-				  "tags": { "1": "1", "namedb": "db3" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress1",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-south-3",
-				  "tags": { "namespace": "kube-system", "propingress1": "valueingress1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress2",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-east-3",
-				  "tags": { "1": "1", "namedb": "db3" }
-				}
-			  },
-			  {
-				"uid": "Service1",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-east-1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service2",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-east-2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service3",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-east-2",
-				  "tags": { "k1": "1", "namepod": "podService3" }
-				}
-			  },
-			  {
-				"uid": "Service4",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-west-2",
-				  "tags": { "1": "1", "namepod": "podService6" }
-				}
-			  },
-			  {
-				"uid": "rds1",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-west-2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "rds2",
-				"metadata": {
-				  "kind": "Pod",
-				  "region": "cn-west-2",
-				  "tags": { "proprds2": "valuerds2", "namepod": "pod-system" }
-				}
-			  }
-			],
-			"edges": [
-			  {
-				"uid": "ELB_source0::::vm1_source0",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "ELB",
-				  "targetTopokey": "source0",
-				  "targetUid": "vm1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress1_source1::::vm2_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source1",
-				  "sourceUid": "Nginx-ingress1",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress2_source0::::vm3_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Nginx-ingress2",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm3",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service1_source0::::vm2_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service1",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service2_source0::::vm2_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service2",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service3_source0::::vm3_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service3",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm3",
-				  "tags": { "1": "1", "edgeprop": "edge-com2" }
-				}
-			  },
-			  {
-				"uid": "Service4_source0::::vm3_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service4",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm3",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "rds1_source0::::vm4_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "rds1",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm4",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "rds2_source0::::vm5_source1",
-				"metadata": {
-				  "kind": "LOCATE",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "rds2",
-				  "targetTopokey": "source1",
-				  "targetUid": "vm5",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "ELB_source0::::Nginx-ingress1_source0",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "ELB",
-				  "targetTopokey": "source0",
-				  "targetUid": "Nginx-ingress1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "ELB_source1::::Nginx-ingress2_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source1",
-				  "sourceUid": "ELB",
-				  "targetTopokey": "source1",
-				  "targetUid": "Nginx-ingress2",
-				  "tags": { "1": "1", "edgeprop": "edge-com0" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress1_source0::::Service1_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Nginx-ingress1",
-				  "targetTopokey": "source1",
-				  "targetUid": "Service1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress1_source0::::Service2_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Nginx-ingress1",
-				  "targetTopokey": "source1",
-				  "targetUid": "Service2",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress2_source1::::Service3_source0",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source1",
-				  "sourceUid": "Nginx-ingress2",
-				  "targetTopokey": "source0",
-				  "targetUid": "Service3",
-				  "tags": { "edgeprop": "edge-com0", "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Nginx-ingress2_source0::::Service4_source0",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Nginx-ingress2",
-				  "targetTopokey": "source0",
-				  "targetUid": "Service4",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service1_source0::::rds1_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service1",
-				  "targetTopokey": "source1",
-				  "targetUid": "rds1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service2_source0::::rds1_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service2",
-				  "targetTopokey": "source1",
-				  "targetUid": "rds1",
-				  "tags": { "1": "1" }
-				}
-			  },
-			  {
-				"uid": "Service3_source0::::rds2_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source0",
-				  "sourceUid": "Service3",
-				  "targetTopokey": "source1",
-				  "targetUid": "rds2",
-				  "tags": { "1": "1", "edgeprop": "edge-com1" }
-				}
-			  },
-			  {
-				"uid": "Service4_source1::::rds2_source1",
-				"metadata": {
-				  "kind": "communication",
-				  "sourceTopokey": "source1",
-				  "sourceUid": "Service4",
-				  "targetTopokey": "source1",
-				  "targetUid": "rds2",
-				  "tags": { "1": "1", "edgeprop": "edge-com2" }
-				}
-			  }
-			]
-		  }
-      }
-   }`
-	return jsonNodeData
 }

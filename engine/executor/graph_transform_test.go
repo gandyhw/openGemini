@@ -21,12 +21,25 @@ import (
 
 	"github.com/openGemini/openGemini/engine/executor"
 	"github.com/openGemini/openGemini/engine/hybridqp"
+	"github.com/openGemini/openGemini/lib/util"
 	"github.com/openGemini/openGemini/lib/util/lifted/influx/influxql"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 )
 
+// injectMockTopo replaces the topo-data fetcher with the fixed test topology so
+// that Work can be exercised without a real topo-service client. The original
+// fetcher is restored when the test finishes.
+func injectMockTopo(t *testing.T) {
+	prev := executor.TopoDataFetcher
+	executor.TopoDataFetcher = func(util.Param, string, string) (string, error) {
+		return executor.MockGetTimeGraph(), nil
+	}
+	t.Cleanup(func() { executor.TopoDataFetcher = prev })
+}
+
 func TestGraphTransform(t *testing.T) {
+	injectMockTopo(t)
 	stmt := &influxql.GraphStatement{
 		HopNum:      3,
 		StartNodeId: "ELB",
@@ -64,6 +77,7 @@ func TestGraphTransform(t *testing.T) {
 }
 
 func TestGraphTransformAddAdditionalConfig(t *testing.T) {
+	injectMockTopo(t)
 	output := executor.NewChunkPort(hybridqp.NewRowDataTypeImpl(*influxql.DefaultGraphVarRef()))
 	convey.Convey("with applicationId filter without time filter", t, func() {
 		sql := "match path=(startNode{uid:'ELB'})-[es*..3]-() where applicationId = '68085da68514366010a73c61' return path"

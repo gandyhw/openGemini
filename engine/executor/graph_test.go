@@ -147,11 +147,11 @@ func TestGraph(t *testing.T) {
     }
   }`
 
-	success, _ := graph.CreateGraph(jsonNodeData)
+	createErr := graph.CreateGraph(jsonNodeData)
 	nodeInfo := graph.GetNodeInfo("vm_a6a7f584")
 	edgeInfo := graph.GetEdgeInfo("pod_e253075e_source0::::vm_a6a7f584_source0")
 	subgraph, err := graph.MultiHopFilter("vm_a6a7f584", 1, nil, nil)
-	assertEqual(t, true, success)
+	assertEqual(t, createErr, nil)
 	assertEqual(t, err, nil)
 
 	expectNodeResult := &GraphNode{
@@ -331,8 +331,7 @@ func TestGraphBranch(t *testing.T) {
         }
       }
     }`
-		success, err := graph.CreateGraph(jsonNodeData)
-		assertEqual(t, false, success)
+		err := graph.CreateGraph(jsonNodeData)
 		assertEqual(t, "this edge's sourceNode does not exist", err.Error())
 	})
 	convey.Convey("targetNode does not exist", t, func() {
@@ -369,8 +368,7 @@ func TestGraphBranch(t *testing.T) {
             }
            }
         }`
-		success, err := graph.CreateGraph(jsonNodeData1)
-		assertEqual(t, false, success)
+		err := graph.CreateGraph(jsonNodeData1)
 		assertEqual(t, "this edge's targetNode does not exist", err.Error())
 	})
 
@@ -402,9 +400,8 @@ func TestGraphBranch(t *testing.T) {
            }
          }
         }`
-		success, err := graph.CreateGraph(jsonNodeData2)
-		assertEqual(t, false, success)
-		assertEqual(t, "error parsing JSON", err.Error())
+		err := graph.CreateGraph(jsonNodeData2)
+		assertEqual(t, true, strings.HasPrefix(err.Error(), "parse graph json:"))
 	})
 
 }
@@ -415,7 +412,7 @@ func TestCheckFilterCondition(t *testing.T) {
 		Nodes: make(map[string]GraphNode),
 		Edges: make(map[string]GraphEdge),
 	}
-	graph.CreateGraph(mockGetTimeGraph())
+	graph.CreateGraph(MockGetTimeGraph())
 	convey.Convey("node common condition", t, func() {
 		sql := "graph 2 'Nginx-ingress2' node kind = 'Pod' and uid = 'Service3' or uid = 'rds2' or uid = 'ELB'"
 		stmt := getStmt(t, sql)
@@ -742,4 +739,41 @@ func generateGraphData(nodeNum int, edgesPerNode int) Response {
 		},
 	}
 	return data
+}
+
+// TestBatchInsertEdgesIncremental verifies that wiring adjacency lists only
+// processes the edges of the current batch, so calling BatchInsertEdges
+// incrementally does not duplicate adjacency entries from previous batches.
+func TestBatchInsertEdgesIncremental(t *testing.T) {
+	graph := NewGraph()
+	graph.BatchInsertNodes(GraphData{Graph: TopoInfo{Vertex: []GraphNode{
+		{Uid: "A"}, {Uid: "B"}, {Uid: "C"},
+	}}})
+
+	batch1 := GraphData{Graph: TopoInfo{Edges: []GraphEdge{
+		{Uid: "e1", MetaData: EdgeMetaData{SourceUid: "A", TargetUid: "B"}},
+	}}}
+	assertEqual(t, nil, graph.BatchInsertEdges(batch1))
+
+	batch2 := GraphData{Graph: TopoInfo{Edges: []GraphEdge{
+		{Uid: "e2", MetaData: EdgeMetaData{SourceUid: "B", TargetUid: "C"}},
+	}}}
+	assertEqual(t, nil, graph.BatchInsertEdges(batch2))
+
+	// e1 must not be appended again when batch2 is inserted.
+	assertEqual(t, 1, len(graph.Nodes["A"].OutEdges))
+	assertEqual(t, 1, len(graph.Nodes["B"].InEdges))
+	assertEqual(t, 1, len(graph.Nodes["B"].OutEdges))
+	assertEqual(t, 1, len(graph.Nodes["C"].InEdges))
+}
+
+// TestBatchInsertEdgesMissingNode verifies that an edge referencing an absent
+// endpoint returns an error instead of being silently wired.
+func TestBatchInsertEdgesMissingNode(t *testing.T) {
+	graph := NewGraph()
+	graph.BatchInsertNodes(GraphData{Graph: TopoInfo{Vertex: []GraphNode{{Uid: "A"}}}})
+	err := graph.BatchInsertEdges(GraphData{Graph: TopoInfo{Edges: []GraphEdge{
+		{Uid: "e1", MetaData: EdgeMetaData{SourceUid: "A", TargetUid: "missing"}},
+	}}})
+	assertEqual(t, "this edge's targetNode does not exist", err.Error())
 }
